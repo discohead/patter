@@ -1,0 +1,289 @@
+[
+  {
+    "name": "g_sine",
+    "sclang": "{ |out=0, freq=440, amp=0.1| Out.ar(out, SinOsc.ar(freq, 0, amp) ! 2) }",
+    "args": {
+      "out": 0,
+      "freq": 440,
+      "amp": 0.1
+    },
+    "js": "Out.ar(out, SinOsc.ar(freq, 0, amp).dup(2))"
+  },
+  {
+    "name": "g_sawfilter",
+    "sclang": "{ |out=0, freq=110, cutoff=1200, rq=0.3, amp=0.2| var sig = RLPF.ar(Saw.ar(freq * [1, 1.01]), cutoff, rq); Out.ar(out, sig * amp) }",
+    "args": {
+      "out": 0,
+      "freq": 110,
+      "cutoff": 1200,
+      "rq": 0.3,
+      "amp": 0.2
+    },
+    "js": "const sig = RLPF.ar(Saw.ar(freq * [1, 1.01]), cutoff, rq); Out.ar(out, sig * amp)"
+  },
+  {
+    "name": "g_adsr",
+    "sclang": "{ |out=0, freq=440, amp=0.2, gate=1| var env = EnvGen.kr(Env.adsr(0.01, 0.2, 0.6, 0.5), gate, doneAction: 2); Out.ar(out, Pan2.ar(Pulse.ar(freq, 0.3) * env * amp, 0)) }",
+    "args": {
+      "out": 0,
+      "freq": 440,
+      "amp": 0.2,
+      "gate": 1
+    },
+    "js": "const env = EnvGen.kr(Env.adsr(0.01, 0.2, 0.6, 0.5), gate, { doneAction: 2 }); Out.ar(out, Pan2.ar(Pulse.ar(freq, 0.3) * env * amp, 0))"
+  },
+  {
+    "name": "g_lforange",
+    "sclang": "{ |out=0| var lfo = LFNoise1.kr(0.5).range(200, 2000); Out.ar(out, LPF.ar(WhiteNoise.ar(0.1), lfo)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const lfo = LFNoise1.kr(0.5).range(200, 2000); Out.ar(out, LPF.ar(WhiteNoise.ar(0.1), lfo))"
+  },
+  {
+    "name": "g_exprange",
+    "sclang": "{ |out=0| Out.ar(out, SinOsc.ar(SinOsc.kr(0.2).exprange(100, 1000), 0, 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "Out.ar(out, SinOsc.ar(SinOsc.kr(0.2).exprange(100, 1000), 0, 0.1))"
+  },
+  {
+    "name": "g_demand",
+    "sclang": "{ |out=0| var trig = Impulse.kr(4); var note = Demand.kr(trig, 0, Dseq([60, 63, 67, 70], inf)); Out.ar(out, Saw.ar(note.midicps, 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const trig = Impulse.kr(4); const note = Demand.kr(trig, 0, Dseq([60, 63, 67, 70], inf)); Out.ar(out, Saw.ar(note.midicps(), 0.1))"
+  },
+  {
+    "name": "g_duty",
+    "sclang": "{ |out=0| var f = Duty.kr(0.25, 0, Drand([200, 300, 400], inf)); var g = Duty.kr(Dwhite(0.1, 0.3, inf), 0, Dseq([1, 0.5], inf)); Out.ar(out, SinOsc.ar(f, 0, g * 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const f = Duty.kr(0.25, 0, Drand([200, 300, 400], inf)); const g = Duty.kr(Dwhite(0.1, 0.3, inf), 0, Dseq([1, 0.5], inf)); Out.ar(out, SinOsc.ar(f, 0, g * 0.1))"
+  },
+  {
+    "name": "g_klank",
+    "sclang": "{ |out=0| Out.ar(out, Klank.ar(`[[800, 1071, 1153, 1723], nil, [1, 1, 1, 1]], Impulse.ar(2, 0, 0.1))) }",
+    "args": {
+      "out": 0
+    },
+    "js": "Out.ar(out, Klank.ar([[800, 1071, 1153, 1723], null, [1, 1, 1, 1]], Impulse.ar(2, 0, 0.1)))"
+  },
+  {
+    "name": "g_splay",
+    "sclang": "{ |out=0| Out.ar(out, Splay.ar(Saw.ar([100, 150, 200, 250]) * 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "Out.ar(out, Splay.ar(Saw.ar([100, 150, 200, 250]) * 0.1))"
+  },
+  {
+    "name": "g_muladd",
+    "sclang": "{ |out=0, a=1| Out.ar(out, SinOsc.ar(440, 0, 0.5, 0.5) * a) }",
+    "args": {
+      "out": 0,
+      "a": 1
+    },
+    "js": "Out.ar(out, SinOsc.ar(440, 0, 0.5, 0.5) * a)"
+  },
+  {
+    "name": "g_mix",
+    "sclang": "{ |out=0| Out.ar(out, Mix([SinOsc.ar(100), SinOsc.ar(200), SinOsc.ar(300), SinOsc.ar(400), SinOsc.ar(500)]) * 0.1) }",
+    "args": {
+      "out": 0
+    },
+    "js": "Out.ar(out, Mix([SinOsc.ar(100), SinOsc.ar(200), SinOsc.ar(300), SinOsc.ar(400), SinOsc.ar(500)]) * 0.1)"
+  },
+  {
+    "name": "g_localfb",
+    "sclang": "{ |out=0| var fb = LocalIn.ar(2); var sig = Impulse.ar(1) + (fb * 0.9); LocalOut.ar(DelayC.ar(sig, 0.2, 0.2)); Out.ar(out, sig * 0.2) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const fb = LocalIn.ar(2); const sig = Impulse.ar(1) + fb * 0.9; LocalOut.ar(DelayC.ar(sig, 0.2, 0.2)); Out.ar(out, sig * 0.2)"
+  },
+  {
+    "name": "g_rates",
+    "sclang": "{ |out=0, t_trig=0, i_freq=440| Out.ar(out, SinOsc.ar(i_freq) * Decay2.kr(t_trig, 0.01, 0.3)) }",
+    "args": {
+      "out": 0,
+      "t_trig": 0,
+      "i_freq": 440
+    },
+    "js": "Out.ar(out, SinOsc.ar(i_freq) * Decay2.kr(t_trig, 0.01, 0.3))"
+  },
+  {
+    "name": "g_select",
+    "sclang": "{ |out=0, which=0| Out.ar(out, Select.ar(which, [SinOsc.ar(220), Saw.ar(220), Pulse.ar(220)]) * 0.1) }",
+    "args": {
+      "out": 0,
+      "which": 0
+    },
+    "js": "Out.ar(out, Select.ar(which, [SinOsc.ar(220), Saw.ar(220), Pulse.ar(220)]) * 0.1)"
+  },
+  {
+    "name": "g_unary",
+    "sclang": "{ |out=0, note=60| Out.ar(out, SinOsc.ar(note.midicps).tanh.softclip * 0.1) }",
+    "args": {
+      "out": 0,
+      "note": 60
+    },
+    "js": "Out.ar(out, SinOsc.ar(note.midicps()).tanh().softclip() * 0.1)"
+  },
+  {
+    "name": "g_linlin",
+    "sclang": "{ |out=0, x=0.5| Out.ar(out, SinOsc.ar(x.lag(0.1).linlin(0, 1, 100, 1000)) * 0.1) }",
+    "args": {
+      "out": 0,
+      "x": 0.5
+    },
+    "js": "Out.ar(out, SinOsc.ar(x.lag(0.1).linlin(0, 1, 100, 1000)) * 0.1)"
+  },
+  {
+    "name": "g_fft",
+    "sclang": "{ |out=0| var chain = FFT(LocalBuf(2048), WhiteNoise.ar(0.1)); chain = PV_BrickWall(chain, 0.2); Out.ar(out, IFFT(chain)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "let chain = FFT(LocalBuf(2048), WhiteNoise.ar(0.1)); chain = PV_BrickWall(chain, 0.2); Out.ar(out, IFFT(chain))"
+  },
+  {
+    "name": "g_sendreply",
+    "sclang": "{ |out=0| var s = SinOsc.kr(1); SendReply.kr(Impulse.kr(10), '/val', [s, s * 2], 7); Out.ar(out, SinOsc.ar(440 + (s * 100), 0, 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const s = SinOsc.kr(1); SendReply.kr(Impulse.kr(10), '/val', [s, s * 2], 7); Out.ar(out, SinOsc.ar(440 + s * 100, 0, 0.1))"
+  },
+  {
+    "name": "g_playbuf",
+    "sclang": "{ |out=0, buf=0| Out.ar(out, PlayBuf.ar(2, buf, BufRateScale.kr(buf), loop: 1) * 0.5) }",
+    "args": {
+      "out": 0,
+      "buf": 0
+    },
+    "js": "Out.ar(out, PlayBuf.ar(2, buf, BufRateScale.kr(buf), { loop: 1 }) * 0.5)"
+  },
+  {
+    "name": "g_stepper",
+    "sclang": "{ |out=0| var t = Impulse.kr(8); var s = Stepper.kr(t, 0, 0, 7); var r = Latch.kr(LFNoise0.kr(10), PulseDivider.kr(t, 2)); Out.ar(out, SinOsc.ar((s * 2 + 48 + (r * 12).round(1)).midicps, 0, 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const t = Impulse.kr(8); const s = Stepper.kr(t, 0, 0, 7); const r = Latch.kr(LFNoise0.kr(10), PulseDivider.kr(t, 2)); Out.ar(out, SinOsc.ar((s * 2 + 48 + (r * 12).round(1)).midicps(), 0, 0.1))"
+  },
+  {
+    "name": "g_oscs",
+    "sclang": "{ |out=0| Out.ar(out, [Formant.ar(100, 800, 200), Blip.ar(100, 20), VarSaw.ar(100, 0, 0.3), SinOscFB.ar(100, 0.7), LFTri.ar(100), LFPulse.ar(100, 0, 0.3)].sum * 0.05) }",
+    "args": {
+      "out": 0
+    },
+    "js": "Out.ar(out, [Formant.ar(100, 800, 200), Blip.ar(100, 20), VarSaw.ar(100, 0, 0.3), SinOscFB.ar(100, 0.7), LFTri.ar(100), LFPulse.ar(100, 0, 0.3)].sum() * 0.05)"
+  },
+  {
+    "name": "g_verb",
+    "sclang": "{ |out=0| var s = Decay.ar(Impulse.ar(1), 0.2, WhiteNoise.ar(0.1)); Out.ar(out, FreeVerb.ar(CombC.ar(s, 0.2, 0.1, 2), 0.5, 0.8) + GVerb.ar(s, 20, 3)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const s = Decay.ar(Impulse.ar(1), 0.2, WhiteNoise.ar(0.1)); Out.ar(out, FreeVerb.ar(CombC.ar(s, 0.2, 0.1, 2), 0.5, 0.8) + GVerb.ar(s, 20, 3))"
+  },
+  {
+    "name": "g_moog",
+    "sclang": "{ |out=0, cutoff=1000| Out.ar(out, MoogFF.ar(Saw.ar(55), cutoff, 3) * 0.2) }",
+    "args": {
+      "out": 0,
+      "cutoff": 1000
+    },
+    "js": "Out.ar(out, MoogFF.ar(Saw.ar(55), cutoff, 3) * 0.2)"
+  },
+  {
+    "name": "g_envmc",
+    "sclang": "{ |out=0, gate=1| var e = EnvGen.kr(Env.new([0, [1, 0.5], 0], [0.1, 0.5], [-4, 'sin'], 1), gate, doneAction: 2); Out.ar(out, SinOsc.ar([300, 400]) * e * 0.1) }",
+    "args": {
+      "out": 0,
+      "gate": 1
+    },
+    "js": "const e = EnvGen.kr(new Env([0, [1, 0.5], 0], [0.1, 0.5], [-4, 'sin'], 1), gate, { doneAction: 2 }); Out.ar(out, SinOsc.ar([300, 400]) * e * 0.1)"
+  },
+  {
+    "name": "g_dynamics",
+    "sclang": "{ |out=0| var s = Saw.ar(100, 0.5); Out.ar(out, Limiter.ar(Compander.ar(s, s, 0.3, 1, 0.5), 0.9)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const s = Saw.ar(100, 0.5); Out.ar(out, Limiter.ar(Compander.ar(s, s, 0.3, 1, 0.5), 0.9))"
+  },
+  {
+    "name": "g_perc",
+    "sclang": "{ |out=0, freq=200| var env = EnvGen.ar(Env.perc(0.001, 0.3), doneAction: 2); Out.ar(out, SinOsc.ar(freq * (1 + (env * 2)), 0, env * 0.3)) }",
+    "args": {
+      "out": 0,
+      "freq": 200
+    },
+    "js": "const env = EnvGen.ar(Env.perc(0.001, 0.3), { doneAction: 2 }); Out.ar(out, SinOsc.ar(freq * (1 + env * 2), 0, env * 0.3))"
+  },
+  {
+    "name": "g_pan_pm",
+    "sclang": "{ |out=0, pan=0| Out.ar(out, Pan2.ar(PMOsc.ar(300, 450, 3, 0, 0.1), pan) + Balance2.ar(SinOsc.ar(200), SinOsc.ar(201), pan, 0.1)) }",
+    "args": {
+      "out": 0,
+      "pan": 0
+    },
+    "js": "Out.ar(out, Pan2.ar(PMOsc.ar(300, 450, 3, 0, 0.1), pan) + Balance2.ar(SinOsc.ar(200), SinOsc.ar(201), pan, 0.1))"
+  },
+  {
+    "name": "g_trigs",
+    "sclang": "{ |out=0| var t = Dust.kr(4); var f = TRand.kr(200, 800, t); var g = Trig1.kr(t, 0.1) * ToggleFF.kr(CoinGate.kr(0.5, t)); Out.ar(out, SinOsc.ar(f.lag(0.05), 0, g.lag(0.01) * 0.1)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const t = Dust.kr(4); const f = TRand.kr(200, 800, t); const g = Trig1.kr(t, 0.1) * ToggleFF.kr(CoinGate.kr(0.5, t)); Out.ar(out, SinOsc.ar(f.lag(0.05), 0, g.lag(0.01) * 0.1))"
+  },
+  {
+    "name": "g_kr_out",
+    "sclang": "{ |out=0, rate=1| Out.kr(out, [SinOsc.kr(rate), LFSaw.kr(rate * 0.5).range(0, 1)]) }",
+    "args": {
+      "out": 0,
+      "rate": 1
+    },
+    "js": "Out.kr(out, [SinOsc.kr(rate), LFSaw.kr(rate * 0.5).range(0, 1)])"
+  },
+  {
+    "name": "g_infb",
+    "sclang": "{ |out=0, inp=20| Out.ar(out, InFeedback.ar(inp, 2) * 0.5 + (In.kr(5, 1) * 0)) }",
+    "args": {
+      "out": 0,
+      "inp": 20
+    },
+    "js": "Out.ar(out, InFeedback.ar(inp, 2) * 0.5 + In.kr(5, 1) * 0)"
+  },
+  {
+    "name": "g_delays",
+    "sclang": "{ |out=0| var s = Impulse.ar(2); Out.ar(out, DelayN.ar(s, 0.5, 0.25) + AllpassC.ar(s, 0.1, 0.05, 1) + CombL.ar(s, 0.1, 0.01, 0.5) + Pluck.ar(WhiteNoise.ar(0.1), s, 0.01, 0.005, 2, 0.3)) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const s = Impulse.ar(2); Out.ar(out, DelayN.ar(s, 0.5, 0.25) + AllpassC.ar(s, 0.1, 0.05, 1) + CombL.ar(s, 0.1, 0.01, 0.5) + Pluck.ar(WhiteNoise.ar(0.1), s, 0.01, 0.005, 2, 0.3))"
+  },
+  {
+    "name": "g_varlag",
+    "sclang": "{ |out=0, x=440| Out.ar(out, SinOsc.ar(VarLag.kr(x, 0.5, -3), 0, 0.1) + SinOsc.ar(VarLag.kr(x, 0.3, 0, \\lin), 0, 0.1)) }",
+    "args": {
+      "out": 0,
+      "x": 440
+    },
+    "js": "Out.ar(out, SinOsc.ar(VarLag.kr(x, 0.5, -3), 0, 0.1) + SinOsc.ar(VarLag.kr(x, 0.3, 0, 'lin'), 0, 0.1))"
+  },
+  {
+    "name": "g_pvbranch",
+    "sclang": "{ |out=0| var chain = FFT(LocalBuf(1024), WhiteNoise.ar(0.1)); var a = PV_MagFreeze(chain, LFPulse.kr(1)); var b = PV_BrickWall(chain, 0.3); Out.ar(out, [IFFT(a), IFFT(b)]) }",
+    "args": {
+      "out": 0
+    },
+    "js": "const chain = FFT(LocalBuf(1024), WhiteNoise.ar(0.1)); const a = PV_MagFreeze(chain, LFPulse.kr(1)); const b = PV_BrickWall(chain, 0.3); Out.ar(out, [IFFT(a), IFFT(b)])"
+  }
+]
