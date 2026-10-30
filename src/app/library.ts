@@ -79,7 +79,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T 
       msg = ((await res.json()) as { error?: string }).error ?? msg;
     } catch {
       /* not JSON (an Access login page, say) */
-      if (res.status === 403 || res.redirected) msg = 'not signed in (reload the page to sign in again)';
+      if (res.status === 403 || res.redirected) msg = 'not signed in: sign in again at /login';
     }
     throw new Error(msg);
   }

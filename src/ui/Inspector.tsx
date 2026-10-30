@@ -2,7 +2,8 @@
 // (⌘/Ctrl-Enter hot-swaps it); a subpatch as its interface — inlets you can
 // re-patch, outlets, the controls on its face, what's inside, and what you
 // can do with it; a macro and its targets; or, with nothing selected inside
-// a subpatch, the subpatch you're in.
+// a subpatch, the subpatch you're in. On a listener's page it all reads the
+// same, but only the mixer's switches change anything: the patch is the host's.
 
 import { useEffect, useState } from 'react';
 import { app, useEmitter } from '../app/store';
@@ -22,7 +23,11 @@ export function Inspector() {
   return (
     <div className="code-panel empty">
       <p>Select a module to see its code, a subpatch to see its interface.</p>
-      <p>Shift-click or drag across the graph to select several, then <kbd>⌘G</kbd> to group them into a subpatch. Double-click a subpatch to open it; <kbd>esc</kbd> goes back up.</p>
+      {app.listening ? (
+        <p>Double-click a subpatch to open it; <kbd>esc</kbd> goes back up.</p>
+      ) : (
+        <p>Shift-click or drag across the graph to select several, then <kbd>⌘G</kbd> to group them into a subpatch. Double-click a subpatch to open it; <kbd>esc</kbd> goes back up.</p>
+      )}
     </div>
   );
 }
@@ -87,6 +92,7 @@ function CodePanel({ name }: { name: string }) {
   const live = rt.module(name);
   const report = live ? rt.report(name) : null;
   const dirty = code !== doc.code;
+  const readOnly = app.listening;
 
   const apply = async () => {
     setBusy(true);
@@ -126,28 +132,32 @@ function CodePanel({ name }: { name: string }) {
               </label>
             </>
           )}
-          <button
-            className="ghost danger"
-            onClick={async () => {
-              try {
-                rt.checkpoint();
-                await rt.removeModule(name, { force: true });
-                app.select(null);
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            }}
-          >
-            remove
-          </button>
+          {!readOnly && (
+            <button
+              className="ghost danger"
+              onClick={async () => {
+                try {
+                  rt.checkpoint();
+                  await rt.removeModule(name, { force: true });
+                  app.select(null);
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              remove
+            </button>
+          )}
         </div>
       </header>
       {doc.description && <p className="desc">{doc.description}</p>}
       <textarea
         spellCheck={false}
         value={code}
+        readOnly={readOnly}
         onChange={(e) => setCode(e.target.value)}
         onKeyDown={(e) => {
+          if (readOnly) return;
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void apply();
@@ -162,10 +172,14 @@ function CodePanel({ name }: { name: string }) {
           }
         }}
       />
-      <div className="row between">
-        <span className="dim">{dirty ? 'edited — ⌘↩ to hot-swap' : 'in sync'}</span>
-        <button disabled={!dirty || busy} onClick={() => void apply()}>{busy ? 'compiling…' : 'apply'}</button>
-      </div>
+      {readOnly ? (
+        <p className="dim">The code as it runs; it changes when the patch on air does.</p>
+      ) : (
+        <div className="row between">
+          <span className="dim">{dirty ? 'edited — ⌘↩ to hot-swap' : 'in sync'}</span>
+          <button disabled={!dirty || busy} onClick={() => void apply()}>{busy ? 'compiling…' : 'apply'}</button>
+        </div>
+      )}
       {error && <pre className="error">{error}</pre>}
       {note && !error && <p className="dim">{note}</p>}
       {warnings.length > 0 && !error && <pre className="warn">{warnings.join('\n')}</pre>}
@@ -215,6 +229,7 @@ function SubpatchPanel({ path, here }: { path: string; here?: boolean }) {
   const { modules, subpatches } = childrenOf(doc, path);
   const instances = sp.abstraction ? rt.instancesOf(sp.abstraction) : [];
   const count = Object.keys(doc.modules).filter((k) => within(k, path)).length;
+  const readOnly = app.listening;
 
   return (
     <div className="code-panel">
@@ -228,26 +243,30 @@ function SubpatchPanel({ path, here }: { path: string; here?: boolean }) {
         <div className="row wrap">
           {!here && <button className="ghost" onClick={() => app.enter(path)}>open</button>}
           {here && <button className="ghost" onClick={() => app.up()}>↑ up</button>}
-          <button className="ghost" onClick={() => void run(async () => app.selectMany((await rt.ungroup(path)).moved))}>ungroup</button>
-          <button className="ghost" onClick={() => void run(async () => app.select((await rt.duplicate(path)).path))}>
-            {sp.abstraction ? 'another instance' : 'duplicate'}
-          </button>
-          {sp.abstraction ? (
-            <button className="ghost" title="cut loose: later edits stay here" onClick={() => void run(() => rt.detach(path))}>detach</button>
-          ) : (
-            <button className="ghost" onClick={() => setAbsName(leafOf(path))}>save as abstraction</button>
+          {!readOnly && (
+            <>
+              <button className="ghost" onClick={() => void run(async () => app.selectMany((await rt.ungroup(path)).moved))}>ungroup</button>
+              <button className="ghost" onClick={() => void run(async () => app.select((await rt.duplicate(path)).path))}>
+                {sp.abstraction ? 'another instance' : 'duplicate'}
+              </button>
+              {sp.abstraction ? (
+                <button className="ghost" title="cut loose: later edits stay here" onClick={() => void run(() => rt.detach(path))}>detach</button>
+              ) : (
+                <button className="ghost" onClick={() => setAbsName(leafOf(path))}>save as abstraction</button>
+              )}
+              <button
+                className="ghost danger"
+                onClick={() =>
+                  void run(async () => {
+                    await rt.removeSubpatch(path, { force: true });
+                    if (here) app.up();
+                  })
+                }
+              >
+                remove
+              </button>
+            </>
           )}
-          <button
-            className="ghost danger"
-            onClick={() =>
-              void run(async () => {
-                await rt.removeSubpatch(path, { force: true });
-                if (here) app.up();
-              })
-            }
-          >
-            remove
-          </button>
         </div>
       </header>
       {absName !== null && (
@@ -286,6 +305,7 @@ function SubpatchPanel({ path, here }: { path: string; here?: boolean }) {
               <span className="dim">←</span>
               <select
                 value={inl.from ?? ''}
+                disabled={readOnly}
                 title="what feeds this inlet (re-patching doesn't restart anything)"
                 onChange={(e) => void run(() => rt.defineSubpatch(path, { inlets: { [name]: { from: e.target.value || null } } }))}
               >
@@ -320,16 +340,18 @@ function SubpatchPanel({ path, here }: { path: string; here?: boolean }) {
         controls <span className="dim">· its face</span>
       </h4>
       {Object.keys(sp.controls).length === 0 ? (
-        <p className="dim">none yet. Open it, select a module and ☆ the knobs that should show from outside.</p>
+        <p className="dim">{readOnly ? 'none' : 'none yet. Open it, select a module and ☆ the knobs that should show from outside.'}</p>
       ) : (
         <ul className="ports">
           {Object.entries(sp.controls).map(([n, ref]) => (
             <li key={n}>
               <span className="port-name">{n}</span>
               <span className="dim">→</span> {ref}
-              <button className="ghost tiny" title="take off the face" onClick={() => void run(() => rt.defineSubpatch(path, { controls: { [n]: null } }))}>
-                ×
-              </button>
+              {!readOnly && (
+                <button className="ghost tiny" title="take off the face" onClick={() => void run(() => rt.defineSubpatch(path, { controls: { [n]: null } }))}>
+                  ×
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -371,19 +393,21 @@ function MacroPanel({ name }: { name: string }) {
           <span className="dim"> · {Math.round(m.value * 100) / 100}{m.bipolar ? ' (bipolar)' : ''}</span>
         </div>
         <Where path={name} />
-        <div className="row">
-          <button
-            className="ghost danger"
-            onClick={() =>
-              void run(() => {
-                rt.removeMacro(name);
-                app.select(null);
-              })
-            }
-          >
-            remove
-          </button>
-        </div>
+        {!app.listening && (
+          <div className="row">
+            <button
+              className="ghost danger"
+              onClick={() =>
+                void run(() => {
+                  rt.removeMacro(name);
+                  app.select(null);
+                })
+              }
+            >
+              remove
+            </button>
+          </div>
+        )}
       </header>
       {m.description && <p className="desc">{m.description}</p>}
       <h4>targets</h4>
@@ -419,9 +443,11 @@ function MultiPanel({ ids }: { ids: string[] }) {
           </li>
         ))}
       </ul>
-      <p className="dim">
-        <kbd>⌘G</kbd> groups them into a subpatch: inlets and outlets are made for every cable that crosses the boundary, and nothing restarts.
-      </p>
+      {!app.listening && (
+        <p className="dim">
+          <kbd>⌘G</kbd> groups them into a subpatch: inlets and outlets are made for every cable that crosses the boundary, and nothing restarts.
+        </p>
+      )}
     </div>
   );
 }

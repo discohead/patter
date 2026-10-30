@@ -1,9 +1,11 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { app, useEmitter } from '../app/store';
+import { UNTITLED } from '../app/tree';
 import { AgentChat } from './AgentChat';
 import { Inspector } from './Inspector';
 import { Dialogs } from './Dialogs';
 import { Navigator } from './Navigator';
+import { FollowSwitch, HOST, NetworkStrip, OnAirTitle, Transcript } from './OnAir';
 import { Panels } from './Panels';
 import { SessionMenu } from './SessionMenu';
 import { PatchGraph } from './PatchGraph';
@@ -87,19 +89,23 @@ function Settings({ onClose }: { onClose: () => void }) {
   return (
     <div className="settings">
       <h3>Settings</h3>
-      <p className="dim">Agent: DeepSeek V4.1 Flash on Workers AI, through AI Gateway.</p>
-      <label>
-        Reasoning
-        <select value={s.effort} onChange={(e) => app.updateSettings({ effort: e.target.value as typeof s.effort })}>
-          <option value="off">off: fastest</option>
-          <option value="low">low</option>
-          <option value="high">high: complex patches</option>
-        </select>
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={s.autoSendVoice} onChange={(e) => app.updateSettings({ autoSendVoice: e.target.checked })} />
-        send voice input when I let go
-      </label>
+      {!app.listening && (
+        <>
+          <p className="dim">Agent: DeepSeek V4.1 Flash on Workers AI, through AI Gateway.</p>
+          <label>
+            Reasoning
+            <select value={s.effort} onChange={(e) => app.updateSettings({ effort: e.target.value as typeof s.effort })}>
+              <option value="off">off: fastest</option>
+              <option value="low">low</option>
+              <option value="high">high: complex patches</option>
+            </select>
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={s.autoSendVoice} onChange={(e) => app.updateSettings({ autoSendVoice: e.target.checked })} />
+            send voice input when I let go
+          </label>
+        </>
+      )}
       <h4>Recording</h4>
       <label>
         ⟲ capture keeps the last
@@ -115,38 +121,42 @@ function Settings({ onClose }: { onClose: () => void }) {
         <input type="checkbox" checked={s.autoDownload} onChange={(e) => app.updateSettings({ autoDownload: e.target.checked })} />
         download each take as soon as it's done
       </label>
-      <h4>Sessions</h4>
-      <div className="row wrap">
-        <button
-          className="ghost"
-          title="a fresh session with this patch; this one stays in the library"
-          onClick={() => {
-            onClose();
-            void app.freshStart().catch((e) => app.showToast((e as Error).message, { error: true }));
-          }}
-        >
-          clear the conversation
-        </button>
-        <button
-          className="ghost"
-          onClick={() => {
-            onClose();
-            void app.newSession(null);
-          }}
-        >
-          new session
-        </button>
-        <button
-          className="ghost"
-          title="what every session reads, wherever it is"
-          onClick={() => {
-            onClose();
-            app.showDialog({ kind: 'context', level: 'person' });
-          }}
-        >
-          your AGENTS.md…
-        </button>
-      </div>
+      {!app.listening && (
+        <>
+          <h4>Sessions</h4>
+          <div className="row wrap">
+            <button
+              className="ghost"
+              title="a fresh session with this patch; this one stays in the library"
+              onClick={() => {
+                onClose();
+                void app.freshStart().catch((e) => app.showToast((e as Error).message, { error: true }));
+              }}
+            >
+              clear the conversation
+            </button>
+            <button
+              className="ghost"
+              onClick={() => {
+                onClose();
+                void app.newSession(null);
+              }}
+            >
+              new session
+            </button>
+            <button
+              className="ghost"
+              title="what every session reads, wherever it is"
+              onClick={() => {
+                onClose();
+                app.showDialog({ kind: 'context', level: 'person' });
+              }}
+            >
+              your AGENTS.md…
+            </button>
+          </div>
+        </>
+      )}
       <div className="row end">
         <button onClick={onClose}>done</button>
       </div>
@@ -172,7 +182,8 @@ function Log() {
 /**
  * ⌘. stops and plays (SuperCollider's own), ⌘S keeps a checkpoint, ⌘O finds
  * a session, ⌘\ shows the library, ⌥R (or F9) records the mix, ⌥C captures
- * its last minutes — from anywhere, the chat box too.
+ * its last minutes — from anywhere, the chat box too. A listener's page has
+ * no library: there, only the sound and the recorder.
  */
 function useGlobalKeys() {
   useEffect(() => {
@@ -193,6 +204,8 @@ function useGlobalKeys() {
       if (e.key === '.') {
         e.preventDefault();
         app.toggleTransport();
+      } else if (app.listening) {
+        return;
       } else if (e.key.toLowerCase() === 's' && !e.shiftKey) {
         e.preventDefault();
         void app.checkpointNow();
@@ -210,10 +223,11 @@ function useGlobalKeys() {
   }, []);
 }
 
-/** Audio files dragged onto the page go into the patch (and the library). */
+/** Audio files dragged onto the page go into the patch (and the library). Not on a listener's page: no library there. */
 function useFileDrop(): boolean {
   const [over, setOver] = useState(false);
   useEffect(() => {
+    if (app.listening) return;
     let depth = 0;
     const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const enter = (e: DragEvent) => {
@@ -251,6 +265,18 @@ function useFileDrop(): boolean {
   return over;
 }
 
+/** What a listener's start screen says is on air. */
+function OnAirNow() {
+  const s = app.radio.status;
+  const doc = app.radio.latest?.doc;
+  const modules = doc ? Object.keys(doc.modules).length : 0;
+  const what = doc ? `“${doc.title === UNTITLED ? 'untitled session' : doc.title}” (${modules} module${modules === 1 ? '' : 's'})` : '';
+  if (!s) return <p className="dim">Tuning in…</p>;
+  if (!s.session) return <p>Nothing has been on air yet. Start audio anyway, and it plays here when {HOST} goes on air.</p>;
+  if (!s.live) return <p>Off air since {new Date(s.since).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}. The last patch, {what}, still plays.</p>;
+  return <p>On air: {what}. Your browser plays it; the knobs are yours to turn.</p>;
+}
+
 function StartScreen() {
   useEmitter(app.uiEvents);
   const waiting = app.waitingTools;
@@ -265,8 +291,9 @@ function StartScreen() {
       ) : (
         <>
           <button className="big" disabled={app.state !== 'off'} onClick={() => void app.start()}>
-            {app.state === 'booting' ? 'starting scsynth…' : app.state === 'restoring' ? 'bringing your patch back…' : 'start audio'}
+            {app.state === 'booting' ? 'starting scsynth…' : app.state === 'restoring' ? (app.listening ? 'tuning in…' : 'bringing your patch back…') : 'start audio'}
           </button>
+          {app.listening && app.state === 'off' && <OnAirNow />}
           {app.resumes && app.state === 'off' && (
             <p>
               Picks up “{app.resumes.title}” ({app.resumes.modules} module{app.resumes.modules === 1 ? '' : 's'}) where you left it.
@@ -297,18 +324,25 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const rt = app.runtime;
+  // A listener's page: what's on air instead of the library, the conversation to read instead of the chat.
+  const listening = app.listening;
+  const nav = app.navOpen && !listening;
 
   return (
-    <div className={`app${app.stopped ? ' is-stopped' : ''}`}>
+    <div className={`app${app.stopped ? ' is-stopped' : ''}${listening ? ' listening' : ''}`}>
+      {listening && <NetworkStrip />}
       <header className="top">
-        <div className="brand-row">
-          <SessionMenu />
-        </div>
+        <div className="brand-row">{listening ? <OnAirTitle /> : <SessionMenu />}</div>
         {app.state === 'ready' ? <Transport /> : <div />}
         <div className="row">
+          {listening && <FollowSwitch />}
           <MasterMeter />
-          <button className="ghost" disabled={!rt.canUndo} onClick={() => void rt.undo()} title="undo (⌘Z)">↶</button>
-          <button className="ghost" disabled={!rt.canRedo} onClick={() => void rt.redo()} title="redo (⌘⇧Z)">↷</button>
+          {!listening && (
+            <>
+              <button className="ghost" disabled={!rt.canUndo} onClick={() => void rt.undo()} title="undo (⌘Z)">↶</button>
+              <button className="ghost" disabled={!rt.canRedo} onClick={() => void rt.redo()} title="redo (⌘⇧Z)">↷</button>
+            </>
+          )}
           <button className="ghost" onClick={() => setShowLog(!showLog)}>log</button>
           <button className="ghost" onClick={() => setShowSettings(!showSettings)}>settings</button>
         </div>
@@ -316,16 +350,20 @@ export function App() {
 
       <StartScreen />
 
-      <main className={`main${app.navOpen ? ' with-nav' : ''}`}>
-        {app.navOpen && (
+      <main className={`main${nav ? ' with-nav' : ''}`}>
+        {nav && (
           <aside className="nav-col">
             <Navigator />
           </aside>
         )}
         <aside className="left">
-          <Suspense key={app.session} fallback={<div className="chat-loading dim">opening the conversation…</div>}>
-            <AgentChat />
-          </Suspense>
+          {listening ? (
+            <Transcript />
+          ) : (
+            <Suspense key={app.session} fallback={<div className="chat-loading dim">opening the conversation…</div>}>
+              <AgentChat />
+            </Suspense>
+          )}
         </aside>
         <section className="center">
           <div className="graph-wrap">

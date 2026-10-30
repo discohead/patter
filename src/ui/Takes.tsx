@@ -262,14 +262,17 @@ function TakeRow({ take }: { take: Take }) {
           <button disabled={recording || !!busy} title="save the WAV file (24-bit) to your computer" onClick={() => run('wav', () => app.downloadTake(take.id))}>
             {busy === 'wav' ? '…' : '⬇ WAV'}
           </button>
-          <button
-            className="ghost"
-            disabled={recording || !!busy || app.state !== 'ready'}
-            title={take.bars ? `into the patch as a sample of ${take.bars * 4} beats (it loops)` : 'into the patch as a sample'}
-            onClick={() => run('patch', () => app.takeToPatch(take.id))}
-          >
-            {busy === 'patch' ? '…' : '→ sample'}
-          </button>
+          {/* A sample goes into the library: the host's page only. */}
+          {!app.listening && (
+            <button
+              className="ghost"
+              disabled={recording || !!busy || app.state !== 'ready'}
+              title={take.bars ? `into the patch as a sample of ${take.bars * 4} beats (it loops)` : 'into the patch as a sample'}
+              onClick={() => run('patch', () => app.takeToPatch(take.id))}
+            >
+              {busy === 'patch' ? '…' : '→ sample'}
+            </button>
+          )}
           {confirm ? (
             <button
               className="danger-solid"

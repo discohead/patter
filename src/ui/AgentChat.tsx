@@ -23,6 +23,7 @@ import {
 import type { UIMessage } from 'ai';
 import { app, useEmitter } from '../app/store';
 import { runTool, summarizePatch } from '../agent/tools';
+import { subjectOf, textOf, TOOL_LABEL } from '../app/transcript';
 import { branchesAt, UNTITLED } from '../app/tree';
 import { PushToTalk, speechSupported } from './speech';
 
@@ -82,33 +83,6 @@ function ReasoningPart({ text }: { text: string }) {
 
 // ── tool calls ──────────────────────────────────────────────────────────────
 
-const TOOL_LABEL: Record<string, string> = {
-  define_module: 'module', remove_module: 'remove', set_params: 'knobs', modulate: 'patch',
-  define_macro: 'macro', remove_macro: 'remove macro', define_routine: 'routine', routine_control: 'routine',
-  set_tempo: 'tempo', mix: 'mix', expose_controls: 'surface', listen: 'listen', inspect: 'inspect',
-  graph: 'graph', trace: 'trace', ugen_reference: 'reference', clear_patch: 'clear', annotate: 'notes',
-  subpatch: 'subpatch', abstraction: 'abstraction', samples: 'samples', context: 'AGENTS.md',
-};
-
-function subjectOf(name: string, args: Record<string, unknown> | undefined): string {
-  if (!args) return '';
-  if (name === 'samples') return `${args.action ?? ''} ${args.name ?? args.query ?? args.where ?? ''}${args.from ? ` ← ${args.from}` : ''}`.trim();
-  if (name === 'context') return `${args.action ?? ''} ${args.action === 'read' ? '' : args.level ?? 'song'}`.trim();
-  if (name === 'subpatch' || name === 'abstraction') {
-    const members = Array.isArray(args.members) ? ` (${(args.members as string[]).join(', ')})` : '';
-    const what = name === 'abstraction' && args.action === 'instantiate' ? `${args.name} → ${args.path}` : name === 'abstraction' && args.action === 'save' ? `${args.path} as ${args.name}` : args.path ?? args.name ?? '';
-    return `${args.action ?? ''} ${what}${members}`.trim();
-  }
-  if (typeof args.name === 'string') return args.name;
-  if (typeof args.module === 'string') return args.module;
-  if (Array.isArray(args.routes)) return (args.routes as { source: string; target: string }[]).map((r) => `${r.source}→${r.target}`).join(', ');
-  if (Array.isArray(args.updates)) return (args.updates as { target: string; value: number }[]).map((u) => `${u.target}=${u.value}`).join(', ');
-  if (typeof args.bpm === 'number') return `${args.bpm} bpm`;
-  if (Array.isArray(args.names)) return (args.names as string[]).join(', ');
-  if (name === 'graph') return 'patch';
-  return '';
-}
-
 function ToolCard(props: ToolCallMessagePartProps) {
   useEmitter(app.uiEvents);
   const { toolName, toolCallId, args, result, status } = props;
@@ -144,9 +118,6 @@ function ToolCard(props: ToolCallMessagePartProps) {
 
 /** The conversation as the agent keeps it (assistant-ui's view joins and renumbers; branches count these). */
 const ChatInfo = createContext<{ messages: UIMessage[] }>({ messages: [] });
-
-const textOf = (m: UIMessage | undefined) =>
-  (m?.parts ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('').replace(/<patch_state>[\s\S]*<\/patch_state>/g, '').trim();
 
 /** Run an action from a button; say what went wrong. */
 const act = (p: Promise<unknown>) => void p.catch((e) => app.showToast((e as Error).message, { error: true }));

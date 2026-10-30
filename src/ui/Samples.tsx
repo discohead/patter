@@ -91,49 +91,55 @@ function SampleCard({ name }: { name: string }) {
           <strong>{name}</strong>
           <span className="dim">{a?.kind ?? ''}</span>
         </div>
-        <button
-          className="ghost tiny"
-          title={users.length ? `played by ${users.join(', ')}` : 'take it out of the patch'}
-          disabled={users.length > 0}
-          onClick={() => run(() => rt.removeSample(name))}
-        >
-          ×
-        </button>
+        {!app.listening && (
+          <button
+            className="ghost tiny"
+            title={users.length ? `played by ${users.join(', ')}` : 'take it out of the patch'}
+            disabled={users.length > 0}
+            onClick={() => run(() => rt.removeSample(name))}
+          >
+            ×
+          </button>
+        )}
       </div>
       <Wave src={doc.src} beats={doc.beats} />
       <div className="sample-facts dim" title={doc.file ?? doc.src}>
         {doc.file ?? doc.src} · {round(doc.duration)} s · {doc.channels === 1 ? 'mono' : doc.channels === 2 ? 'stereo' : `${doc.channels} ch`}
         {bpm && <> · {bpm} bpm as cut</>}
         {users.length > 0 && <> · played by {users.join(', ')}</>}
+        {app.listening && doc.beats !== undefined && <> · {doc.beats} beats</>}
+        {app.listening && doc.root !== undefined && <> · root {noteName(440 * 2 ** ((doc.root - 69) / 12))}</>}
       </div>
-      <div className="row sample-fields">
-        <label title="how many beats it spans: QLoop plays it in time at any tempo">
-          beats
-          <select value={doc.beats ?? ''} onChange={(e) => run(() => rt.defineSample(name, { beats: e.target.value ? Number(e.target.value) : null }))}>
-            <option value="">—</option>
-            {[...new Set([...(a?.beatsCandidates ?? []), 1, 2, 4, 8, 16, 32, 64, ...(doc.beats ? [doc.beats] : [])])].sort((x, y) => x - y).map((n) => (
-              <option key={n} value={n}>
-                {n} ({round((n * 60) / doc.duration, 1)} bpm)
-              </option>
-            ))}
-          </select>
-        </label>
-        <label title="the note it sounds at: OneShot's note plays in tune from it">
-          root
-          <input
-            className="num"
-            defaultValue={doc.root !== undefined ? round(doc.root) : ''}
-            placeholder={a?.root ? String(round(a.root)) : '—'}
-            onBlur={(e) => {
-              const v = e.target.value.trim();
-              const n = v === '' ? null : Number(v);
-              if (n === null || Number.isFinite(n)) run(() => rt.defineSample(name, { root: n }));
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          />
-          {doc.root !== undefined && <span className="dim note">{noteName(440 * 2 ** ((doc.root - 69) / 12))}</span>}
-        </label>
-      </div>
+      {!app.listening && (
+        <div className="row sample-fields">
+          <label title="how many beats it spans: QLoop plays it in time at any tempo">
+            beats
+            <select value={doc.beats ?? ''} onChange={(e) => run(() => rt.defineSample(name, { beats: e.target.value ? Number(e.target.value) : null }))}>
+              <option value="">—</option>
+              {[...new Set([...(a?.beatsCandidates ?? []), 1, 2, 4, 8, 16, 32, 64, ...(doc.beats ? [doc.beats] : [])])].sort((x, y) => x - y).map((n) => (
+                <option key={n} value={n}>
+                  {n} ({round((n * 60) / doc.duration, 1)} bpm)
+                </option>
+              ))}
+            </select>
+          </label>
+          <label title="the note it sounds at: OneShot's note plays in tune from it">
+            root
+            <input
+              className="num"
+              defaultValue={doc.root !== undefined ? round(doc.root) : ''}
+              placeholder={a?.root ? String(round(a.root)) : '—'}
+              onBlur={(e) => {
+                const v = e.target.value.trim();
+                const n = v === '' ? null : Number(v);
+                if (n === null || Number.isFinite(n)) run(() => rt.defineSample(name, { root: n }));
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+            {doc.root !== undefined && <span className="dim note">{noteName(440 * 2 ** ((doc.root - 69) / 12))}</span>}
+          </label>
+        </div>
+      )}
       {error && <p className="error small">{error}</p>}
     </div>
   );
@@ -267,11 +273,18 @@ export function SamplesPanel() {
               <div key={f} className="sample-card loading dim">reading {f}…</div>
             ))}
             {names.length === 0 && app.incoming.length === 0 && (
-              <p className="dim pad">No samples yet. Drop audio files anywhere on the page, pick from Sonic Pi's pack below, or ask for one.</p>
+              <p className="dim pad">
+                {app.listening ? 'The patch on air plays no samples.' : "No samples yet. Drop audio files anywhere on the page, pick from Sonic Pi's pack below, or ask for one."}
+              </p>
             )}
           </div>
-          <RecordRow />
-          <AddSample />
+          {/* Both write to the library: the host's page only. */}
+          {!app.listening && (
+            <>
+              <RecordRow />
+              <AddSample />
+            </>
+          )}
         </>
       )}
     </div>

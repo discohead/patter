@@ -1,5 +1,6 @@
 // Samples in the engine. A source is 'stock:<name>' (Sonic Pi's pack, served
-// from /samples) or 'lib:<sha256>' (the person's library, from /api/samples).
+// from /samples) or 'lib:<sha256>' (the person's library, from /api/samples;
+// a listener gets the ones on air from /listen/samples).
 // Each source is fetched once, decoded here for its waveform and analysis, and
 // loaded into one scsynth buffer that every patch name pointing at it shares.
 // Buffers nothing uses any more are freed a moment later.
@@ -39,6 +40,8 @@ export function sampleUrl(src: string): string {
 const FIRST_BUFFER = 16;
 
 export class SampleBank implements SampleSource {
+  /** How a library sample's bytes are fetched (a listener's page asks the broadcast, not the library). */
+  fetchLibrary: (hash: string) => Promise<Response> = (hash) => fetch(sampleUrl(`lib:${hash}`), { credentials: 'same-origin' });
   private loading = new Map<string, Promise<LoadedSample>>();
   private loaded = new Map<string, LoadedSample>();
   /** Bytes already in hand (a file just dropped in), so they aren't fetched back. */
@@ -146,7 +149,8 @@ export class SampleBank implements SampleSource {
   private async load(src: string): Promise<LoadedSample> {
     let bytes = this.seeds.get(src);
     if (!bytes) {
-      const res = await fetch(sampleUrl(src), { credentials: 'same-origin' });
+      const url = sampleUrl(src);
+      const res = src.startsWith('lib:') ? await this.fetchLibrary(src.slice(4)) : await fetch(url, { credentials: 'same-origin' });
       if (!res.ok) throw new Error(`couldn't fetch the sample ${src} (HTTP ${res.status})`);
       bytes = await res.arrayBuffer();
     }

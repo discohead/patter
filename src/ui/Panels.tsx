@@ -146,7 +146,8 @@ async function togglePin(scope: string, t: Target) {
 function ItemKnob({ it, scope }: { it: Item; scope: string }) {
   const rt = app.runtime;
   const t = it.target;
-  const canPin = !scope || within(pathOf(t), scope);
+  // A listener turns the knobs; which ones are on the panel is the host's patch.
+  const canPin = !app.listening && (!scope || within(pathOf(t), scope));
   const pin = canPin
     ? {
         pinned: pinnedAs(scope, t) !== null,
@@ -231,16 +232,18 @@ function Routes({ routes, labelFor }: { routes: { source: string; target: string
               title={`${r.source} → ${r.target} × ${r.amount}`}
               onChange={(v) => rt.modulate(r.source, r.target, Math.abs(v) < 0.001 ? (v < 0 ? -0.001 : 0.001) : v)}
             />
-            <button
-              className="ghost tiny"
-              title="remove this route"
-              onClick={() => {
-                rt.checkpoint();
-                rt.modulate(r.source, r.target, 0);
-              }}
-            >
-              ×
-            </button>
+            {!app.listening && (
+              <button
+                className="ghost tiny"
+                title="remove this route"
+                onClick={() => {
+                  rt.checkpoint();
+                  rt.modulate(r.source, r.target, 0);
+                }}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -309,8 +312,15 @@ export function Panels() {
   const where = scope ? leafOf(scope) : 'patch';
   const selLabel = sel.length === 1 ? leafOf(sel[0].replace(/^macro:/, '')) : `${sel.length}`;
   const perf = tab === 'performance' ? performance(scope) : null;
-  const hint =
-    tab === 'samples'
+  const hint = app.listening
+    ? tab === 'samples'
+      ? 'the samples in the patch on air'
+      : tab === 'mixer'
+      ? 'your mix, in this page only'
+      : tab === 'recordings'
+      ? '● REC ⌥R from the next bar · ⟲ ⌥C the last minutes'
+      : 'turn anything: it changes the sound here, and nowhere else'
+    : tab === 'samples'
       ? 'drop audio files anywhere on the page to add them'
       : tab === 'mixer'
       ? 'your final mix: the agent leaves it to you'

@@ -235,7 +235,7 @@ function GraphBar({ naming, setNaming }: { naming: boolean; setNaming: (v: boole
           </form>
         ) : (
           <>
-            {sel.length > 0 && (
+            {sel.length > 0 && !app.listening && (
               <button className="ghost" title="move the selection into a new subpatch (⌘G)" onClick={() => setNaming(true)}>
                 group{sel.length > 1 ? ` ${sel.length}` : ''}
               </button>
@@ -243,10 +243,12 @@ function GraphBar({ naming, setNaming }: { naming: boolean; setNaming: (v: boole
             {isSub && (
               <>
                 <button className="ghost" title="open (↵ or double-click)" onClick={() => app.enter(one!)}>open</button>
-                <button className="ghost" title="dissolve into this level (⌘⇧G)" onClick={() => void run(async () => app.selectMany((await rt.ungroup(one!)).moved))}>ungroup</button>
+                {!app.listening && (
+                  <button className="ghost" title="dissolve into this level (⌘⇧G)" onClick={() => void run(async () => app.selectMany((await rt.ungroup(one!)).moved))}>ungroup</button>
+                )}
               </>
             )}
-            {(isSub || isModule) && (
+            {(isSub || isModule) && !app.listening && (
               <button className="ghost" title="duplicate (⌘D)" onClick={() => void run(async () => app.select((await rt.duplicate(one!)).path))}>duplicate</button>
             )}
             {app.scope && sel.length === 0 && (
@@ -315,6 +317,12 @@ export function PatchGraph() {
         else app.up();
       } else if (e.key === 'Enter' && one && rt.doc.subpatches[one]) {
         app.enter(one);
+      } else if (mod && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        app.selectMany(boxes.filter((b) => groupable(b.id)).map((b) => b.id));
+      } else if (app.listening) {
+        // A listener looks around; the patch's structure is the host's.
+        return;
       } else if (mod && e.key.toLowerCase() === 'g' && !e.shiftKey && app.selection.some(groupable)) {
         e.preventDefault();
         setNaming(true);
@@ -324,9 +332,6 @@ export function PatchGraph() {
       } else if (mod && e.key.toLowerCase() === 'd' && one && (rt.doc.subpatches[one] || rt.doc.modules[one])) {
         e.preventDefault();
         attempt(async () => app.select((await rt.duplicate(one)).path));
-      } else if (mod && e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        app.selectMany(boxes.filter((b) => groupable(b.id)).map((b) => b.id));
       } else if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         void (e.shiftKey ? rt.redo() : rt.undo());
@@ -391,16 +396,23 @@ export function PatchGraph() {
       <GraphBar naming={naming} setNaming={setNaming} />
       {empty && !app.scope ? (
         <div className="graph empty">
-          <div>
-            <p>Describe a patch — by voice or text.</p>
-            <p className="dim">“Two detuned saws into a resonant low-pass, a slow sine LFO on the cutoff, an envelope on a VCA, clocked by a 16th-note sequencer in C minor.”</p>
-          </div>
+          {app.listening ? (
+            <div>
+              <p>Nothing in the patch yet.</p>
+              <p className="dim">It fills in here as it's built: modules, cables, macros, all of it running in this page.</p>
+            </div>
+          ) : (
+            <div>
+              <p>Describe a patch — by voice or text.</p>
+              <p className="dim">“Two detuned saws into a resonant low-pass, a slow sine LFO on the cutoff, an envelope on a VCA, clocked by a 16th-note sequencer in C minor.”</p>
+            </div>
+          )}
         </div>
       ) : empty ? (
         <div className="graph empty">
           <div>
             <p>This subpatch is empty.</p>
-            <p className="dim">Ask for something to be built in “{leafOf(app.scope)}”, or go up (esc).</p>
+            <p className="dim">{app.listening ? 'Go up (esc).' : `Ask for something to be built in “${leafOf(app.scope)}”, or go up (esc).`}</p>
           </div>
         </div>
       ) : (

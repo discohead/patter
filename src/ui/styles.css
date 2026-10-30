@@ -529,3 +529,26 @@ button.tiny { padding: 0 6px; font-size: 11px; line-height: 18px; }
   .nav-col { position: absolute; z-index: 35; top: 0; bottom: 0; left: 0; width: 260px; box-shadow: 12px 0 40px #0009; }
 }
 .chat-loading { padding: 18px 14px; font-size: 12.5px; }
+
+/* a listener's page: the line back to the network, what's on air, follow, and the conversation to read */
+.app.listening .boot { inset: 70px 0 0 0; }
+.network {
+  display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 14px; flex: none; overflow: hidden; white-space: nowrap;
+  font: 11px var(--mono); color: var(--dim); background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.network a { color: var(--dim); text-decoration: none; }
+.network a:hover { color: var(--text); }
+.network-mark { font-weight: 600; letter-spacing: .04em; }
+.network-bands { display: flex; align-items: center; gap: 5px; }
+.network-bands a.here { color: var(--accent); }
+.network-dot { color: var(--line2); }
+.network-source { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+.network-source a { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 2px; }
+.listen-title { max-width: 300px; padding: 3px 2px; }
+.on-air-status { font: 11.5px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.on-air-status.live { color: var(--err); }
+.on-air-status.live::before { content: '● '; }
+.follow { margin-right: 8px; }
+.follow .rejoin { color: var(--accent); font-size: 12px; }
+.listen-note { margin: 0; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--dim); }
+.transcript .tool-head:disabled { opacity: 1; cursor: default; }

@@ -13,6 +13,10 @@
 // session can branch from any message of another: the conversation up to
 // there and the patch as it was then (every message and every turn keeps a
 // checkpoint), so trying something never costs what you had.
+//
+// The page is the host's or a listener's (role.ts). A listener's page plays
+// what's on air (radio.ts), its knobs its own, and reaches neither the agent
+// nor the library.
 
 import { useSyncExternalStore } from 'react';
 import { Engine, type EngineLogEntry } from '../engine/engine';
@@ -22,7 +26,9 @@ import { Runtime } from '../runtime/runtime';
 import { Sequencer } from '../seq/sequencer';
 import { emptyPatch, leafOf, migratePatch, parentOf, type PatchDoc } from '../runtime/patch';
 import { library, sha256, type CheckpointMeta, type ForkKeep, type LibraryTree, type SessionEntry, type SessionSnapshot } from './library';
+import { broadcastSample, Radio } from './radio';
 import { formatTime, Recorder } from './recorder';
+import type { Role } from './role';
 import { takeFileName, type Take } from './takes';
 import { contextOf, setOf, songOf, titleFrom, UNTITLED } from './tree';
 
@@ -143,7 +149,20 @@ export class App {
   readonly uiEvents = new Emitter();
   readonly logEvents = new Emitter();
 
-  /** off → (click) booting → restoring (the session's patch) → ready. */
+  /**
+   * Whose page this is: the host's (signed in through Access: the agent, the
+   * library) or a listener's (what's on air, played here; nothing goes
+   * back). Settled before anything loads (begin).
+   */
+  role: Role = 'listener';
+  /** A listener's page: the broadcast it's tuned to. */
+  readonly radio = new Radio({
+    play: (doc) => this.tuneIn(doc),
+    transport: (stopped) => (stopped ? this.stop() : this.play()),
+    changed: () => this.uiEvents.emit(),
+  });
+
+  /** off → (click) booting → restoring (the session's patch, or what's on air) → ready. */
   state: 'off' | 'booting' | 'restoring' | 'ready' | 'error' = 'off';
   bootError = '';
   /** The subpatch the graph shows ('' = the top level). */
@@ -185,7 +204,7 @@ export class App {
   navOpen = loadFlag(NAV_KEY, true);
   /** The last autosave to the server. */
   autosave: 'idle' | 'saving' | 'saved' | 'offline' = 'idle';
-  private snapshot: Promise<SessionSnapshot | null>;
+  private snapshot: Promise<SessionSnapshot | null> = Promise.resolve(null);
   /** Nothing autosaves until the session's own patch is back (an empty page mustn't overwrite it). */
   private restored = false;
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -225,15 +244,34 @@ export class App {
     });
     this.engine.onLog(() => this.logEvents.emit());
     this.abandoned = this.loadAbandoned();
+  }
+
+  /**
+   * Whose page it is, settled before anything loads. The host's picks up its
+   * session and its library; a listener's tunes in, and fetches library
+   * samples through the broadcast.
+   */
+  begin(role: Role) {
+    this.role = role;
+    if (role === 'listener') {
+      this.bank.fetchLibrary = broadcastSample;
+      this.radio.connect();
+      return;
+    }
     this.snapshot = this.fetchSnapshot(this.session, true);
     this.noteResumes();
     void this.refreshTree();
     window.addEventListener('pagehide', () => this.saveNow(true));
   }
 
+  /** A listener's page: what's on air plays here, and nothing goes back. */
+  get listening(): boolean {
+    return this.role === 'listener';
+  }
+
   // ── starting ─────────────────────────────────────────────────────────────
 
-  /** Start audio (browsers need a click for that), then bring back this session's patch. */
+  /** Start audio (browsers need a click for that), then bring back this session's patch (or what's on air). */
   async start(): Promise<void> {
     if (this.state === 'booting' || this.state === 'restoring' || this.state === 'ready') return;
     this.state = 'booting';
@@ -249,7 +287,11 @@ export class App {
       this.uiEvents.emit();
       return;
     }
-    if (!this.restored) {
+    if (this.listening) {
+      this.state = 'restoring';
+      this.uiEvents.emit();
+      await this.radio.start();
+    } else if (!this.restored) {
       this.state = 'restoring';
       this.uiEvents.emit();
       const snap = await this.snapshot;
@@ -258,9 +300,26 @@ export class App {
     }
     this.state = 'ready';
     // A brand-new session is in the library from here on (it can be filed, branched, checkpointed).
-    if (!this.entry) this.saveNow(false);
+    if (!this.listening && !this.entry) this.saveNow(false);
+    // A listener hears what the host hears: the sound starts stopped if the host stopped it.
+    if (this.listening && this.radio.following && this.radio.status?.stopped) this.stop();
     this.uiEvents.emit();
     for (const w of this.readyWaiters.splice(0)) w();
+  }
+
+  /** A listener's page takes the host's patch, changing only what differs (the first one: all of it). */
+  private async tuneIn(doc: PatchDoc): Promise<void> {
+    const next = migratePatch(doc);
+    const errors = await this.runtime.reconcile(next);
+    try {
+      // A new tempo re-anchors the beat: only when it really changed.
+      if (next.bpm && next.bpm !== this.runtime.doc.bpm) this.seq.setBpm(next.bpm);
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+    errors.push(...this.seq.follow(next.routines ?? {}));
+    this.runtime.resetHistory();
+    if (errors.length) this.engine.info(`the patch on air came in with problems: ${errors.join('; ')}`);
   }
 
   /** Resolves once audio runs and the session's patch is back — or the agent's turn was stopped. */
@@ -304,14 +363,14 @@ export class App {
 
   private touched() {
     this.revision++;
-    if (!this.restored) return;
+    if (!this.restored || this.listening) return;
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => this.saveNow(false), 1000);
   }
 
   /** Write the session's patch: to this browser now, to the server as well. */
   private saveNow(unloading: boolean) {
-    if (!this.restored) return;
+    if (!this.restored || this.listening) return;
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = null;
     const snap: SessionSnapshot & { turns: number } = { doc: this.runtime.doc, updated: Date.now(), turns: this.turns };
