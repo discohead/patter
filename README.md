@@ -167,14 +167,80 @@ a client tool: the model asks for something, the browser does it to the
 running engine, and the answer goes back. The patch document (JSON) is the
 source of truth, so saving, undo and branching all work on the document.
 
+Going on air is the same idea pointed outwards. My browser sends the patch
+document, the conversation and the transport to one more Durable Object, and
+it passes them to everyone listening:
+
+```
+ my browser, signed in           Cloudflare                      your browser
+┌──────────────────────┐        ┌───────────────────────┐        ┌──────────────────────┐
+│ patch, conversation, │  PUT   │ OnAir (Durable Object)│ /listen│ the same patch, on   │
+│ ⌘. and ▶             │───────▶│   what's on air       │───────▶│ your own scsynth     │
+│                      │ /api/  │   listeners' sockets  │  Web-  │ the conversation,    │
+│                      │ on-air │   (hibernating)       │ Socket │ to read              │
+└──────────────────────┘        └───────────────────────┘        └──────────────────────┘
+```
+
+---
+
+## Listening
+
+One session at a time can be **on air**. When I flip the switch, everyone at
+datspace.studio gets the patch I'm working on, built in their own tab on their
+own copy of scsynth (nothing is streamed as audio), and the conversation that's
+building it, after each turn. When I turn a knob, theirs turns a moment
+later. When the agent
+redefines a module, it crossfades in on their end too, and the rest keeps
+playing. When I hit ⌘., their sound stops.
+
+Every knob, macro, fader and mute is theirs to play with. **Follow** (on by
+default) means my next change puts my version back. Untick it and their patch
+stays theirs while my changes queue up behind a "rejoin" button. What they
+can't do is prompt, save, upload, rename, branch, or change the patch's
+structure. Those controls aren't greyed out on their page. They aren't there
+at all. Where the chat box would be, one line says who's driving.
+
+Off air, the last patch stays up (with "off air since 9:41 PM"), so whoever
+comes by later still gets something to play with.
+
+### Who can reach what
+
+The host's paths (`/api`, `/agents`, `/login`) sit behind a Cloudflare Access
+application, and the Worker checks the Access JWT again before it does
+anything on them. Everything else is public:
+
+| A listener's page asks for | What it gets |
+| --- | --- |
+| `/`, the app, Sonic Pi's samples | static files (no Worker runs) |
+| `GET /whoami` | `{ "host": false }` |
+| `GET /listen` | a WebSocket: what's on air, then each change |
+| `GET /listen/state` | the same, once, as JSON |
+| `GET /listen/samples/:sha256` | a sample from my library, but only while the patch on air plays it |
+
+A listener's page never asks for `/api` or `/agents`. If something else asks,
+Access turns it away at the edge before the Worker even runs. That rules out
+the model, the library, R2 writes and going on air. Anything a listener sends
+down the WebSocket, apart from a keep-alive ping, closes it, and `/whoami` and
+`/listen` are rate limited per IP.
+
+### Why listeners don't cost me anything
+
+The agent spends real money per token, and it's the only part of patter that
+does. Listeners can't get anywhere near it. What a listener does use is a
+handful of Worker and Durable Object requests, one R2 read per sample (their
+browser keeps it after that), and a WebSocket that sits in a hibernating
+Durable Object, which bills nothing while it waits. Messages out to listeners
+are free. All of that fits in the Workers plan's included usage, and the rate
+limit means nobody can run it up for me. An audience is cheaper than a prompt.
+
 ---
 
 ## Run it yourself
 
 ```bash
 npm install     # also copies SuperSonic's wasm/workers/synthdefs into public/
-npm run dev     # http://localhost:5317
-npm test        # 107 unit + golden tests, ~half a second
+npm run dev     # http://localhost:5317 (add ?listen to see a listener's page)
+npm test        # 151 unit + golden tests, ~half a second
 ```
 
 The fine print, of which there's some:
@@ -184,9 +250,14 @@ The fine print, of which there's some:
   `accountId` in `cloudflare.config.ts` to yours, unless you'd like your tokens
   billed to me. (Please don't.)
 - **An AI Gateway** named `patter`, or point `AI_GATEWAY` at one you have.
-- **Access checks are off in dev.** To deploy, swap in your own route, zone,
-  Access team, audience tag and allowed emails in `cloudflare.config.ts`, then
-  run `npm run deploy`.
+- **Access checks are off in dev**, so in dev everyone is the host; `?listen`
+  gets you a listener's page. To deploy, swap in your own route, zone, Access
+  team, audience tag and allowed emails in `cloudflare.config.ts`, then run
+  `npm run deploy`.
+- **Access covers only the host's paths.** Point a self-hosted Access
+  application at `/api`, `/agents` and `/login` on your hostname. Leave the
+  rest public, and leave its Cookie Path Attribute off, or the sign-in cookie
+  never reaches `/whoami`. To sign in as the host, open `/login`.
 - **It needs a cross-origin isolated page.** SuperSonic's transport uses
   SharedArrayBuffer, and the COOP/COEP headers are already set for dev and
   prod. The smoke tests (`scripts/smoke-*.mjs`) drive headless Chromium.
@@ -242,7 +313,8 @@ finish a track.
 
 **[AGPL-3.0-or-later](LICENSE).** patter runs on SuperSonic, which is AGPL, so
 patter is too. If you run a modified patter as a network service, offer your
-users the source. That's the deal, and it's a good one.
+users the source. That's the deal, and it's a good one. Mine does: every
+listener's page links to this repo and to SuperSonic's.
 
 The bundled Sonic Pi sample pack is CC0, and SuperSonic's synthdefs are MIT.
 
