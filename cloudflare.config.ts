@@ -47,6 +47,8 @@ export default defineConfig(({ mode }) => ({
     // Only datspace.studio: no workers.dev or preview URLs, which Access wouldn't cover.
     workersDev: false,
     previewUrls: false,
-    observability: { enabled: true },
+    // Errors and console output, but no invocation logs: those keep every request's headers,
+    // and listeners' requests would bring their IP addresses with them.
+    observability: { enabled: true, logs: { invocationLogs: false } },
   },
 }));
