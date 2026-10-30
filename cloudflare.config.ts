@@ -31,8 +31,8 @@ export default defineConfig(({ mode }) => ({
       PatchLibrary: bindings.durableObject({ worker: 'patter', exportName: 'PatchLibrary' }),
       // The broadcast: what's on air, and the listeners' WebSockets.
       OnAir: bindings.durableObject({ worker: 'patter', exportName: 'OnAir' }),
-      // Listeners' requests per IP, per Cloudflare location (datspace-ai's limiter is namespace 1001).
-      LISTEN_LIMIT: bindings.rateLimit({ namespace: '1002', simple: { limit: 120, period: 60 } }),
+      // Listeners' requests per IP, per Cloudflare location. Namespaces are per account: datspace-ai uses 1001 and 1002.
+      LISTEN_LIMIT: bindings.rateLimit({ namespace: '1003', simple: { limit: 120, period: 60 } }),
       // Audio files people bring into patches, by content hash (local dev uses a simulated bucket).
       SAMPLES: bindings.r2({ name: 'patter-samples' }),
       AI_GATEWAY: bindings.text('patter'),
