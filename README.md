@@ -271,10 +271,16 @@ The fine print, of which there's some:
 
 ## Can I play with yours?
 
-It's live at **[datspace.fm](https://datspace.fm)**, and no, you can't get in.
-Nothing personal. The agent spends real money per token, so the site is behind
-Cloudflare Access with an allowlist of exactly one email address. The bouncer
-is a JWT, and it doesn't care who you know.
+Sort of. It's at **[datspace.studio](https://datspace.studio)**, and the door's
+open now. When I'm on air you get the patch as I build it, the conversation
+that's building it, and every knob, running on your own copy of scsynth. Turn
+whatever you like. It's your copy.
+
+You still can't prompt it. The agent spends real money per token, so `/agents`
+and `/api` sit behind Cloudflare Access with an allowlist of exactly one email
+address, and the Worker checks the JWT again on every request. The bouncer is
+still a JWT, and he still doesn't care who you know. He just lets you listen
+from the doorway now.
 
 Clone it and run your own. That's what the license is for.
 
