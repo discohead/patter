@@ -49,10 +49,13 @@ export function settled(messages: UIMessage[], abandoned: Set<string>): boolean 
   });
 }
 
+/** Tools whose results come from the host's library (AGENTS.md text, file names): on air, only that they ran. */
+const LIBRARY_TOOLS = new Set(['context', 'samples']);
+
 /**
  * The conversation as listeners get it: the host's messages, the agent's
  * replies, and each tool call by name and subject, how it went and the start
- * of what it returned. Reasoning stays out.
+ * of what it returned (unless that came from the library). Reasoning stays out.
  */
 export function compactTranscript(messages: UIMessage[]): TranscriptMessage[] {
   return messages.flatMap((m): TranscriptMessage[] => {
@@ -75,7 +78,7 @@ export function compactTranscript(messages: UIMessage[]): TranscriptMessage[] {
           name,
           subject: subjectOf(name, t.input as Record<string, unknown> | undefined),
           state: !done ? 'stopped' : out.startsWith('ERROR:') ? 'error' : 'ok',
-          ...(out ? { result: out.slice(0, 240) } : {}),
+          ...(out && !LIBRARY_TOOLS.has(name) ? { result: out.slice(0, 240) } : {}),
         });
       }
     }

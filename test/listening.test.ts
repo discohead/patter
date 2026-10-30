@@ -246,6 +246,23 @@ describe('the conversation, for listeners', () => {
     ]);
   });
 
+  it("keeps what came out of the host's library to itself: AGENTS.md, file names", () => {
+    const out = compactTranscript(
+      said([
+        {
+          id: 'a1',
+          role: 'assistant',
+          parts: [
+            { type: 'tool-context', toolCallId: 't1', state: 'output-available', input: { action: 'read' }, output: '{"person":"my secret plans"}' },
+            { type: 'tool-samples', toolCallId: 't2', state: 'output-available', input: { action: 'browse' }, output: '{"library":["voice memo.wav"]}' },
+          ],
+        },
+      ]),
+    );
+    expect(JSON.stringify(out)).not.toMatch(/secret|voice memo/);
+    expect(out[0].parts.map((p) => (p.type === 'tool' ? `${p.name}: ${p.state}` : ''))).toEqual(['context: ok', 'samples: ok']);
+  });
+
   it('counts a turn as over when every tool call has its answer, or was stopped', () => {
     const turn = (state: string) => said([{ id: 'a1', role: 'assistant', parts: [{ type: 'tool-listen', toolCallId: 't1', state }] }]);
     expect(settled(turn('output-available'), new Set())).toBe(true);
