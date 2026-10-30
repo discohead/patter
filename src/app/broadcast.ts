@@ -1,8 +1,8 @@
 // Going on air, from the host's page. One tab broadcasts at a time: this
-// tab's id (kept for the tab's life, so a reload carries on) goes with every
-// update, and the OnAir object refuses updates from any other, so a second
-// tab (or the phone in your pocket) can't talk over the one on air until
-// you take over from it. The patch goes out with each autosave, the
+// tab's id (kept for the tab's life, so a reload carries on, but never
+// shared with a duplicate of the tab) goes with every update, and the OnAir
+// object refuses updates from any other, so a second tab (or the phone in
+// your pocket) can't talk over the one on air until you take over from it. The patch goes out with each autosave, the
 // conversation whenever it settles, the transport as it changes. Updates go
 // one at a time, oldest first; the ones waiting merge, so a burst of changes
 // costs one request.
@@ -10,17 +10,43 @@
 import type { OnAirStatus, OnAirUpdate, TranscriptMessage } from './on-air';
 
 const PUBLISHER_KEY = 'patter.on-air.publisher';
+const CHANNEL = 'patter.on-air';
 
-function publisherId(): string {
+/**
+ * This tab's id. sessionStorage keeps it through a reload, but "duplicate
+ * tab" copies sessionStorage too, so the page first asks the other open tabs
+ * whether one of them goes by it, and takes a new one if so.
+ */
+export async function claimPublisherId(): Promise<string> {
+  let id: string | null = null;
   try {
-    const existing = sessionStorage.getItem(PUBLISHER_KEY);
-    if (existing) return existing;
-    const fresh = crypto.randomUUID();
-    sessionStorage.setItem(PUBLISHER_KEY, fresh);
-    return fresh;
+    id = sessionStorage.getItem(PUBLISHER_KEY);
   } catch {
-    return crypto.randomUUID();
+    /* no storage: a new id */
   }
+  if (id && typeof BroadcastChannel !== 'undefined') {
+    const asked = id;
+    const taken = await new Promise<boolean>((resolve) => {
+      const channel = new BroadcastChannel(CHANNEL);
+      let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+      const answer = (yes: boolean) => {
+        clearTimeout(timer);
+        channel.close();
+        resolve(yes);
+      };
+      timer = setTimeout(() => answer(false), 300);
+      channel.onmessage = (e) => (e.data as { mine?: string } | null)?.mine === asked && answer(true);
+      channel.postMessage({ who: asked });
+    });
+    if (taken) id = null;
+  }
+  id ??= crypto.randomUUID();
+  try {
+    sessionStorage.setItem(PUBLISHER_KEY, id);
+  } catch {
+    /* kept for this page only */
+  }
+  return id;
 }
 
 type Change = Omit<OnAirUpdate, 'publisher' | 'live'> & { session: string };
@@ -36,7 +62,7 @@ export class Broadcast {
   busy = false;
   /** The last thing that went wrong (cleared by the next thing that goes right). */
   error: string | null = null;
-  private readonly publisher = publisherId();
+  private claimed: Promise<string> | null = null;
   private queue: Change[] = [];
   private flying = false;
   /** The conversation last sent, per session, so an unchanged one isn't sent again. */
@@ -44,10 +70,22 @@ export class Broadcast {
 
   constructor(private readonly changed: () => void) {}
 
+  /** This tab's id, settled once; from then on it tells a duplicate of this tab that the id is taken. */
+  private publisher(): Promise<string> {
+    this.claimed ??= claimPublisherId().then((id) => {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const channel = new BroadcastChannel(CHANNEL);
+        channel.onmessage = (e) => (e.data as { who?: string } | null)?.who === id && channel.postMessage({ mine: id });
+      }
+      return id;
+    });
+    return this.claimed;
+  }
+
   /** After a reload: carry on if this tab was the one on air. */
   async resume(): Promise<void> {
     try {
-      const res = await fetch(`/api/on-air?publisher=${encodeURIComponent(this.publisher)}`, { credentials: 'same-origin', headers: { 'x-patter': '1' } });
+      const res = await fetch(`/api/on-air?publisher=${encodeURIComponent(await this.publisher())}`, { credentials: 'same-origin', headers: { 'x-patter': '1' } });
       if (!res.ok) return;
       const r = (await res.json()) as { status: OnAirStatus; mine: boolean; listeners: number };
       this.state = r.status.live ? (r.mine ? 'on' : 'elsewhere') : 'off';
@@ -125,11 +163,12 @@ export class Broadcast {
   }
 
   private async put(update: Omit<OnAirUpdate, 'publisher'>): Promise<Reply> {
+    const publisher = await this.publisher();
     const res = await fetch('/api/on-air', {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...update, publisher: this.publisher }),
+      body: JSON.stringify({ ...update, publisher }),
     });
     if (!res.ok && res.status !== 409) {
       let msg = `couldn't reach the broadcast (${res.status})`;

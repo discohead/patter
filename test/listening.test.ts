@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UIMessage } from 'ai';
+import { claimPublisherId } from '../src/app/broadcast';
 import { NOTHING_ON_AIR, type OnAirStatus } from '../src/app/on-air';
 import { broadcastSample, keepTurning, Radio } from '../src/app/radio';
 import { roleOf } from '../src/app/role';
@@ -207,6 +208,29 @@ describe('library samples, for a listener', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await later;
     expect(asked).toBe(8);
+  });
+});
+
+describe("the host's tab id", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const storage = (id: string | null) => {
+    const kept = new Map<string, string>(id ? [['patter.on-air.publisher', id]] : []);
+    vi.stubGlobal('sessionStorage', { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v) });
+  };
+
+  it('survives a reload', async () => {
+    storage('tab-before-reload');
+    expect(await claimPublisherId()).toBe('tab-before-reload');
+  });
+
+  it("isn't shared with a duplicate of the tab, which copies its storage", async () => {
+    storage('tab-original');
+    const original = new BroadcastChannel('patter.on-air');
+    original.onmessage = (e) => e.data?.who === 'tab-original' && original.postMessage({ mine: 'tab-original' });
+    const id = await claimPublisherId();
+    original.close();
+    expect(id).not.toBe('tab-original');
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 

@@ -1156,7 +1156,7 @@ export class App {
     await this.broadcast.goLive({
       session: this.session,
       title: this.runtime.doc.title,
-      doc: this.runtime.doc,
+      doc: structuredClone(this.runtime.doc),
       transcript: compactTranscript(this.conversation()),
       bpm: this.seq.bpm,
       stopped: this.stopped,
