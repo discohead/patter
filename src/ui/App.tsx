@@ -5,7 +5,7 @@ import { AgentChat } from './AgentChat';
 import { Inspector } from './Inspector';
 import { Dialogs } from './Dialogs';
 import { Navigator } from './Navigator';
-import { FollowSwitch, HOST, NetworkStrip, OnAirTitle, Transcript } from './OnAir';
+import { FollowSwitch, HOST, NetworkStrip, OnAirButton, OnAirTitle, Transcript } from './OnAir';
 import { Panels } from './Panels';
 import { SessionMenu } from './SessionMenu';
 import { PatchGraph } from './PatchGraph';
@@ -335,7 +335,7 @@ export function App() {
         <div className="brand-row">{listening ? <OnAirTitle /> : <SessionMenu />}</div>
         {app.state === 'ready' ? <Transport /> : <div />}
         <div className="row">
-          {listening && <FollowSwitch />}
+          {listening ? <FollowSwitch /> : <OnAirButton />}
           <MasterMeter />
           {!listening && (
             <>

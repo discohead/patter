@@ -23,7 +23,7 @@ import {
 import type { UIMessage } from 'ai';
 import { app, useEmitter } from '../app/store';
 import { runTool, summarizePatch } from '../agent/tools';
-import { subjectOf, textOf, TOOL_LABEL } from '../app/transcript';
+import { settled as turnSettled, subjectOf, textOf, TOOL_LABEL } from '../app/transcript';
 import { branchesAt, UNTITLED } from '../app/tree';
 import { PushToTalk, speechSupported } from './speech';
 
@@ -551,6 +551,21 @@ export function AgentChat() {
     }, 600);
     return () => clearTimeout(t);
   }, [status, messages]);
+
+  // On air, listeners read along: the conversation goes out whenever it settles (loaded, a turn over, a branch begun).
+  const said = useRef(messages);
+  said.current = messages;
+  useEffect(() => {
+    app.conversation = () => said.current;
+    return () => {
+      app.conversation = () => [];
+    };
+  }, []);
+  useEffect(() => {
+    if (name !== app.session || status !== 'ready' || !turnSettled(messages, app.abandoned)) return;
+    const t = setTimeout(() => app.publishConversation(), 800);
+    return () => clearTimeout(t);
+  }, [status, messages, name]);
 
   // An edit or a retry made this branch: send its message once the connection has settled — the agent
   // knows it, its conversation is here, nothing is streaming or being resumed. A send while the chat is

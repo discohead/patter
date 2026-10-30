@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { UIMessage } from 'ai';
 import { NOTHING_ON_AIR, type OnAirStatus } from '../src/app/on-air';
 import { Radio } from '../src/app/radio';
 import { roleOf } from '../src/app/role';
+import { compactTranscript, settled } from '../src/app/transcript';
 import { emptyPatch, type PatchDoc } from '../src/runtime/patch';
 
 describe('whose page it is', () => {
@@ -133,5 +135,50 @@ describe('the radio', () => {
     const messages = [{ id: 'm1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'darker' }] }];
     radio.receive({ type: 'transcript', session: 's-one', messages });
     expect(radio.transcript).toEqual(messages);
+  });
+});
+
+describe('the conversation, for listeners', () => {
+  const said = (messages: unknown[]) => messages as UIMessage[];
+
+  it('keeps what was said and what the tools did, not the patch state or the reasoning', () => {
+    const out = compactTranscript(
+      said([
+        { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'two saws into a ladder' }, { type: 'text', text: '<patch_state>{"modules":{}}</patch_state>' }] },
+        {
+          id: 'a1',
+          role: 'assistant',
+          parts: [
+            { type: 'reasoning', text: 'thinking about Moogs' },
+            { type: 'text', text: 'Building it.' },
+            { type: 'tool-define_module', toolCallId: 't1', state: 'output-available', input: { name: 'osc' }, output: 'osc: audio, 2 ch' },
+            { type: 'tool-modulate', toolCallId: 't2', state: 'output-available', input: { routes: [{ source: 'lfo', target: 'filter.cutoff' }] }, output: 'ERROR: no module lfo' },
+            { type: 'tool-listen', toolCallId: 't3', state: 'input-available', input: { module: 'filter' } },
+          ],
+        },
+        { id: 'sys', role: 'system', parts: [{ type: 'text', text: 'hidden' }] },
+      ]),
+    );
+    expect(out).toEqual([
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'two saws into a ladder' }] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Building it.' },
+          { type: 'tool', name: 'define_module', subject: 'osc', state: 'ok', result: 'osc: audio, 2 ch' },
+          { type: 'tool', name: 'modulate', subject: 'lfo→filter.cutoff', state: 'error', result: 'ERROR: no module lfo' },
+          { type: 'tool', name: 'listen', subject: 'filter', state: 'stopped' },
+        ],
+      },
+    ]);
+  });
+
+  it('counts a turn as over when every tool call has its answer, or was stopped', () => {
+    const turn = (state: string) => said([{ id: 'a1', role: 'assistant', parts: [{ type: 'tool-listen', toolCallId: 't1', state }] }]);
+    expect(settled(turn('output-available'), new Set())).toBe(true);
+    expect(settled(turn('input-available'), new Set())).toBe(false);
+    expect(settled(turn('input-available'), new Set(['t1']))).toBe(true);
+    expect(settled(said([]), new Set())).toBe(true);
   });
 });

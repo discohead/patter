@@ -14,22 +14,25 @@
 // there and the patch as it was then (every message and every turn keeps a
 // checkpoint), so trying something never costs what you had.
 //
-// The page is the host's or a listener's (role.ts). A listener's page plays
-// what's on air (radio.ts), its knobs its own, and reaches neither the agent
-// nor the library.
+// The page is the host's or a listener's (role.ts). The host can put the
+// session on air (broadcast.ts); a listener's page plays what's on air
+// (radio.ts), its knobs its own, and reaches neither the agent nor the library.
 
 import { useSyncExternalStore } from 'react';
+import type { UIMessage } from 'ai';
 import { Engine, type EngineLogEntry } from '../engine/engine';
 import { floatWav, SampleBank } from '../engine/samples';
 import { GROUPS } from '../engine/groups';
 import { Runtime } from '../runtime/runtime';
 import { Sequencer } from '../seq/sequencer';
 import { emptyPatch, leafOf, migratePatch, parentOf, type PatchDoc } from '../runtime/patch';
+import { Broadcast } from './broadcast';
 import { library, sha256, type CheckpointMeta, type ForkKeep, type LibraryTree, type SessionEntry, type SessionSnapshot } from './library';
 import { broadcastSample, Radio } from './radio';
 import { formatTime, Recorder } from './recorder';
 import type { Role } from './role';
 import { takeFileName, type Take } from './takes';
+import { compactTranscript } from './transcript';
 import { contextOf, setOf, songOf, titleFrom, UNTITLED } from './tree';
 
 type Listener = () => void;
@@ -151,16 +154,20 @@ export class App {
 
   /**
    * Whose page this is: the host's (signed in through Access: the agent, the
-   * library) or a listener's (what's on air, played here; nothing goes
-   * back). Settled before anything loads (begin).
+   * library, going on air) or a listener's (what's on air, played here;
+   * nothing goes back). Settled before anything loads (begin).
    */
   role: Role = 'listener';
+  /** The host's page, going on air. */
+  readonly broadcast = new Broadcast(() => this.uiEvents.emit());
   /** A listener's page: the broadcast it's tuned to. */
   readonly radio = new Radio({
     play: (doc) => this.tuneIn(doc),
     transport: (stopped) => (stopped ? this.stop() : this.play()),
     changed: () => this.uiEvents.emit(),
   });
+  /** Set by the chat: the conversation so far (what listeners read, while on air). */
+  conversation: () => UIMessage[] = () => [];
 
   /** off → (click) booting → restoring (the session's patch, or what's on air) → ready. */
   state: 'off' | 'booting' | 'restoring' | 'ready' | 'error' = 'off';
@@ -208,6 +215,8 @@ export class App {
   /** Nothing autosaves until the session's own patch is back (an empty page mustn't overwrite it). */
   private restored = false;
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the first change since the last autosave was made. */
+  private unsavedSince = 0;
 
   // ── the transport ──
   /** The sound is stopped (⌘.): routines paused, the node tree frozen. */
@@ -248,8 +257,8 @@ export class App {
 
   /**
    * Whose page it is, settled before anything loads. The host's picks up its
-   * session and its library; a listener's tunes in, and fetches library
-   * samples through the broadcast.
+   * session and its library (and the broadcast, if this tab was on air); a
+   * listener's tunes in, and fetches library samples through the broadcast.
    */
   begin(role: Role) {
     this.role = role;
@@ -261,6 +270,7 @@ export class App {
     this.snapshot = this.fetchSnapshot(this.session, true);
     this.noteResumes();
     void this.refreshTree();
+    void this.broadcast.resume();
     window.addEventListener('pagehide', () => this.saveNow(true));
   }
 
@@ -365,14 +375,17 @@ export class App {
     this.revision++;
     if (!this.restored || this.listening) return;
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
-    this.autosaveTimer = setTimeout(() => this.saveNow(false), 1000);
+    // A second after the last change; while changes keep coming (a routine turning a knob), every five seconds at least.
+    this.unsavedSince ||= Date.now();
+    this.autosaveTimer = setTimeout(() => this.saveNow(false), Math.max(0, Math.min(1000, this.unsavedSince + 5000 - Date.now())));
   }
 
-  /** Write the session's patch: to this browser now, to the server as well. */
+  /** Write the session's patch: to this browser now, to the server as well (and to listeners, on air). */
   private saveNow(unloading: boolean) {
     if (!this.restored || this.listening) return;
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = null;
+    this.unsavedSince = 0;
     const snap: SessionSnapshot & { turns: number } = { doc: this.runtime.doc, updated: Date.now(), turns: this.turns };
     const body = JSON.stringify(snap);
     try {
@@ -387,6 +400,8 @@ export class App {
       }
       return;
     }
+    // On air, listeners get this patch (as it is now: leaving the session takes the running one apart).
+    if (this.broadcast.state === 'on') this.broadcast.send({ session: this.session, title: snap.doc.title, doc: structuredClone(snap.doc), bpm: this.seq.bpm, stopped: this.stopped });
     this.autosave = 'saving';
     const session = this.session;
     library.putSession(session, snap).then(
@@ -1001,6 +1016,7 @@ export class App {
     // Notes already scheduled would all start together on play: end them, after the fade.
     setTimeout(() => this.runtime.silenceVoices(), 120);
     this.note('stopped the sound (⌘.)');
+    this.broadcast.send({ session: this.session, stopped: true });
     this.uiEvents.emit();
   }
 
@@ -1018,6 +1034,7 @@ export class App {
     }
     this.pausedRoutines = [];
     this.note('started the sound again');
+    this.broadcast.send({ session: this.session, stopped: false });
     this.uiEvents.emit();
   }
 
@@ -1117,6 +1134,28 @@ export class App {
   /** A change on the mixer, for the agent (it leaves the mix to the person). */
   mixed(what: string) {
     this.note(`mixer: ${what}`);
+  }
+
+  // ── on air ───────────────────────────────────────────────────────────────
+
+  /** Put this session on air (taking it over from another tab, if one has it), or take it off. */
+  async toggleOnAir(): Promise<void> {
+    if (this.broadcast.state === 'on') return this.broadcast.goOff();
+    if (this.state !== 'ready' || this.listening) return;
+    await this.broadcast.goLive({
+      session: this.session,
+      title: this.runtime.doc.title,
+      doc: this.runtime.doc,
+      transcript: compactTranscript(this.conversation()),
+      bpm: this.seq.bpm,
+      stopped: this.stopped,
+    });
+  }
+
+  /** On air, listeners read the conversation: the chat calls this whenever it settles. */
+  publishConversation() {
+    if (this.listening) return;
+    this.broadcast.sendTranscript(this.session, compactTranscript(this.conversation()));
   }
 
   // ── the agent ────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
-// On air, on a listener's page: in place of what only the host can do, a
-// quiet line back to the datspace network (and to patter's source: it's
-// AGPL), what's on air and since when, a Follow switch, and the
-// conversation, to read.
+// On air, in the interface. The host's page has a button to go on and off
+// air. A listener's page has, in place of what only the host can do: a quiet
+// line back to the datspace network (and to patter's source: it's AGPL),
+// what's on air and since when, a Follow switch, and the conversation, to read.
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { app, useEmitter } from '../app/store';
@@ -19,6 +19,32 @@ function clock(t: number): string {
   const d = new Date(t);
   const today = d.toDateString() === new Date().toDateString();
   return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// ── the host's page ─────────────────────────────────────────────────────────
+
+/** Go on air (listeners hear the patch and read the conversation), or off (they keep the last patch). */
+export function OnAirButton() {
+  useEmitter(app.uiEvents);
+  const b = app.broadcast;
+  const on = b.state === 'on';
+  const title = on
+    ? `on air since ${clock(b.since)}, ${b.listeners} listening: they hear this patch and read the conversation; only you can prompt. Click to go off air (they keep the last patch).`
+    : b.state === 'elsewhere'
+      ? 'another of your tabs (or devices) is on air: click to broadcast this one instead'
+      : app.state === 'ready'
+        ? 'broadcast this session: listeners hear the patch and read the conversation; only you can prompt'
+        : 'start audio first: what goes on air is the patch playing here';
+  return (
+    <button
+      className={`on-air${on ? ' on' : ''}${b.error ? ' err' : ''}`}
+      disabled={b.busy || (!on && app.state !== 'ready')}
+      title={b.error ? `${title}\n\n${b.error}` : title}
+      onClick={() => void app.toggleOnAir()}
+    >
+      {on ? `● on air${b.listeners ? ` · ${b.listeners}` : ''}` : b.state === 'elsewhere' ? 'on air elsewhere' : 'go on air'}
+    </button>
+  );
 }
 
 // ── a listener's page ───────────────────────────────────────────────────────

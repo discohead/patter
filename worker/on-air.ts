@@ -48,17 +48,18 @@ export class OnAir extends DurableObject<Env> {
   // ── RPC from the Worker ──────────────────────────────────────────────────
 
   /** The host's update (the Worker has checked Access): kept, then sent to every listener. */
-  publish(update: OnAirUpdate, owner: string): { ok: true; status: OnAirStatus } | OnAirRefusal {
+  publish(update: OnAirUpdate, owner: string): { ok: true; status: OnAirStatus; listeners: number } | OnAirRefusal {
     const r = this.ctx.storage.transactionSync(() => this.state.publish(update, owner));
     if (!r.ok) return r;
-    for (const ws of this.ctx.getWebSockets()) {
+    const listeners = this.ctx.getWebSockets();
+    for (const ws of listeners) {
       try {
         for (const m of r.messages) ws.send(m);
       } catch {
         /* closing as we speak */
       }
     }
-    return { ok: true, status: r.status };
+    return { ok: true, status: r.status, listeners: listeners.length };
   }
 
   /** For the host's page: what's on air, whether it's that tab broadcasting, and how many are listening. */

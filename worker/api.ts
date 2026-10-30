@@ -253,7 +253,7 @@ async function onAir(request: Request, env: Env, user: string, body: () => Promi
   }
   // The patch's samples are in this person's part of R2; listeners are sent them from there.
   const r = await stub.publish(update, await userPrefix(user));
-  return r.ok ? json(r) : json({ error: r.reason === 'elsewhere' ? 'another tab is on air' : 'not on air', reason: r.reason }, 409);
+  return r.ok ? json(r) : json({ ...r, error: r.reason === 'elsewhere' ? 'another tab is on air' : 'not on air' }, 409);
 }
 
 async function session(request: Request, env: Env, lib: DurableObjectStub<PatchLibrary>, name: string, body: () => Promise<Record<string, unknown> | null>): Promise<Response> {
