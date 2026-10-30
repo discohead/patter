@@ -11,17 +11,26 @@ export default defineConfig(({ mode }) => ({
     compatibilityDate: '2026-10-19',
     compatibilityFlags: ['nodejs_compat'],
     entrypoint,
-    // The instrument is static; only the agent WebSocket and the patch library run the Worker.
-    assets: { notFoundHandling: 'single-page-application', runWorkerFirst: ['/agents/*', '/api/*'] },
+    // The instrument is static. The Worker runs for the agent's WebSocket and the library (the host's),
+    // and for who's asking and the broadcast (anyone's).
+    assets: {
+      notFoundHandling: 'single-page-application',
+      runWorkerFirst: ['/agents/*', '/api/*', '/whoami', '/login', '/listen', '/listen/*'],
+    },
     exports: {
       PatterAgent: exports.durableObject({ storage: 'sqlite' }),
       PatchLibrary: exports.durableObject({ storage: 'sqlite' }),
+      OnAir: exports.durableObject({ storage: 'sqlite' }),
     },
     env: {
       // Workers AI only runs on Cloudflare, so local dev reaches the real thing.
       AI: bindings.ai({ dev: { remote: true } }),
       PatterAgent: bindings.durableObject({ worker: 'patter', exportName: 'PatterAgent' }),
       PatchLibrary: bindings.durableObject({ worker: 'patter', exportName: 'PatchLibrary' }),
+      // The broadcast: what's on air, and the listeners' WebSockets.
+      OnAir: bindings.durableObject({ worker: 'patter', exportName: 'OnAir' }),
+      // Listeners' requests per IP, per Cloudflare location (datspace-ai's limiter is namespace 1001).
+      LISTEN_LIMIT: bindings.rateLimit({ namespace: '1002', simple: { limit: 120, period: 60 } }),
       // Audio files people bring into patches, by content hash (local dev uses a simulated bucket).
       SAMPLES: bindings.r2({ name: 'patter-samples' }),
       AI_GATEWAY: bindings.text('patter'),

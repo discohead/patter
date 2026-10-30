@@ -3,6 +3,8 @@ declare namespace Cloudflare {
     AI: Ai;
     PatterAgent: DurableObjectNamespace<import('./agent').PatterAgent>;
     PatchLibrary: DurableObjectNamespace<import('./library').PatchLibrary>;
+    OnAir: DurableObjectNamespace<import('./on-air').OnAir>;
+    LISTEN_LIMIT: RateLimit;
     SAMPLES: R2Bucket;
     AI_GATEWAY: string;
     ACCESS_TEAM: string;

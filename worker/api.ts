@@ -23,8 +23,13 @@
 //   PUT    /api/samples/:sha256                  upload one (the body is the file; its SHA-256 is the key)
 //   GET    /api/samples/:sha256                  download one
 //   DELETE /api/samples/:sha256
+//   GET    /api/on-air?publisher=…               what's on air, whether that tab is broadcasting, how many are listening
+//   PUT    /api/on-air                           { publisher, live?, session?, title?, doc?, transcript?, bpm?, stopped? }:
+//                                                go on air (live: true), off (false), or send what changed
 
 import { getAgentByName } from 'agents';
+import { cleanTranscript, type OnAirUpdate } from '../src/app/on-air';
+import type { PatchDoc } from '../src/runtime/patch';
 import type { CheckpointKind, Conversation } from './agent';
 import { MAX_AGENTS_CHARS, MAX_DOC_CHARS, type ForkKeep, type PatchLibrary } from './library';
 
@@ -44,6 +49,7 @@ const SET_ID = /^set-[0-9a-f-]{36}$/;
 const SONG_ID = /^song-[0-9a-f-]{36}$/;
 const MESSAGE_ID = /^[\w-]{1,100}$/;
 const UUID = /^[0-9a-f-]{36}$/;
+const PUBLISHER = /^[\w-]{8,64}$/;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const fail = (status: number, message: string) => json({ error: message }, status);
@@ -203,7 +209,51 @@ export async function handleApi(request: Request, env: Env, user: string): Promi
 
   if (resource === 'samples' && !sub) return handleSamples(request, env, user, key, lib);
 
+  if (resource === 'on-air' && !key) return onAir(request, env, user, body);
+
   return fail(404, 'not found');
+}
+
+/** Going on air, and what goes out while it is. Only the host gets here; listeners read it from /listen. */
+async function onAir(request: Request, env: Env, user: string, body: () => Promise<Record<string, unknown> | null>): Promise<Response> {
+  const stub = env.OnAir.getByName('on-air');
+  if (request.method === 'GET') return json(await stub.host(new URL(request.url).searchParams.get('publisher') ?? ''));
+  if (request.method !== 'PUT') return fail(405, 'GET or PUT');
+  const b = await body();
+  if (!b || typeof b.publisher !== 'string' || !PUBLISHER.test(b.publisher)) return fail(400, 'needs the publisher (the tab going on air)');
+  const update: OnAirUpdate = { publisher: b.publisher };
+  if (b.live !== undefined) {
+    if (typeof b.live !== 'boolean') return fail(400, 'live: true or false');
+    update.live = b.live;
+  }
+  if (b.session !== undefined) {
+    if (typeof b.session !== 'string' || !SESSION.test(b.session)) return fail(400, 'not a session');
+    update.session = b.session;
+  }
+  if (b.title !== undefined) {
+    if (typeof b.title !== 'string') return fail(400, 'a title is text');
+    update.title = b.title.trim().slice(0, 120) || 'untitled patch';
+  }
+  if (b.doc !== undefined) {
+    if (!validDoc(b.doc)) return fail(400, 'not a patch document (or over 1.9 MB)');
+    update.doc = b.doc as unknown as PatchDoc;
+  }
+  if (b.transcript !== undefined) {
+    const transcript = cleanTranscript(b.transcript);
+    if (!transcript) return fail(400, 'not a conversation');
+    update.transcript = transcript;
+  }
+  if (b.bpm !== undefined) {
+    if (typeof b.bpm !== 'number' || !(b.bpm >= 10 && b.bpm <= 999)) return fail(400, 'bpm: 10 to 999');
+    update.bpm = b.bpm;
+  }
+  if (b.stopped !== undefined) {
+    if (typeof b.stopped !== 'boolean') return fail(400, 'stopped: true or false');
+    update.stopped = b.stopped;
+  }
+  // The patch's samples are in this person's part of R2; listeners are sent them from there.
+  const r = await stub.publish(update, await userPrefix(user));
+  return r.ok ? json(r) : json({ error: r.reason === 'elsewhere' ? 'another tab is on air' : 'not on air', reason: r.reason }, 409);
 }
 
 async function session(request: Request, env: Env, lib: DurableObjectStub<PatchLibrary>, name: string, body: () => Promise<Record<string, unknown> | null>): Promise<Response> {
