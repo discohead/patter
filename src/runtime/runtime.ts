@@ -2131,6 +2131,161 @@ export class Runtime {
     return errors;
   }
 
+  /**
+   * Bring the running patch to a document, changing only what differs: a
+   * module whose code is the same keeps its node (its knobs move in place),
+   * new code crossfades in as a redefinition does, and what's gone fades out.
+   * A listener's page follows the host's patch this way. Routines and the
+   * tempo are the sequencer's (Sequencer.follow).
+   */
+  async reconcile(input: PatchDoc): Promise<string[]> {
+    const next = migratePatch(clonePatch(input));
+    const errors: string[] = [];
+    await this.exclusive(async () => {
+      const doc = this.doc;
+      // What's gone, with its routes and its place on the surface.
+      for (const path of [...this.live.keys()]) if (!next.modules[path]) await this.removeModuleNow(path, { force: true });
+      for (const name of Object.keys(doc.macros)) if (!next.macros[name]) this.removeMacroNow(name);
+
+      // The structure is data: subpatches (inputs re-point below), abstractions, samples (their buffers first).
+      if (this.bank) {
+        await Promise.all(
+          Object.entries(next.samples).map(([name, x]) =>
+            this.bank!.ensure(x.src).catch((e) => {
+              errors.push(`sample ${name}: ${(e as Error).message}`);
+            }),
+          ),
+        );
+      }
+      doc.subpatches = next.subpatches;
+      doc.abstractions = next.abstractions;
+      doc.samples = next.samples;
+      doc.title = next.title;
+      if (next.notes === undefined) delete doc.notes;
+      else doc.notes = next.notes;
+
+      // New modules and new code, in dependency order: retry the ones whose inputs aren't up yet.
+      const pending = new Map(
+        Object.entries(next.modules).filter(([path, m]) => {
+          const live = this.live.get(path);
+          return !live || live.compiled.kind !== m.kind || doc.modules[path]?.code !== m.code;
+        }),
+      );
+      // New ones go in the document first, so lexical lookups can see them (as in loadPatch).
+      for (const [path, m] of pending) if (!this.live.has(path)) doc.modules[path] = { ...m, params: { ...m.params } };
+      for (let round = 0; pending.size && round < 50; round++) {
+        let progress = false;
+        for (const [path, m] of [...pending]) {
+          const { kind, code, params, play, level, pan, fadeTime, description } = m;
+          try {
+            await this.defineModuleNow(path, { kind, code, params, play, level, pan, fadeTime, description }, { fromAbstraction: true });
+            pending.delete(path);
+            progress = true;
+          } catch (e) {
+            if (e instanceof Error && /isn't running yet/.test(e.message)) continue;
+            pending.delete(path);
+            if (!this.live.has(path)) delete doc.modules[path];
+            errors.push(`${path}: ${(e as Error).message}`);
+          }
+        }
+        if (!progress) break;
+      }
+      for (const path of pending.keys()) {
+        if (!this.live.has(path)) delete doc.modules[path];
+        errors.push(`${path}: circular or missing input()`);
+      }
+
+      // Inputs whose inlets or samples moved re-point (or recompile).
+      await this.rewireAll();
+
+      // Knobs and the mixer.
+      let mixed = false;
+      for (const [path, m] of Object.entries(next.modules)) if (this.live.has(path)) mixed = this.matchModule(path, m) || mixed;
+      // A solo changes what every other strip's mute means.
+      if (mixed || this.soloing()) this.syncMonitors();
+
+      // Macros: a new one gets its bus; every one takes the document's settings.
+      for (const [name, mac] of Object.entries(next.macros)) {
+        try {
+          const fresh = !this.macroBuses.has(name);
+          if (fresh) this.defineMacroNow(name, {});
+          const was = doc.macros[name];
+          doc.macros[name] = { ...mac };
+          if (fresh || was?.value !== mac.value || Boolean(was?.bipolar) !== Boolean(mac.bipolar)) this.writeMacro(name);
+        } catch (e) {
+          errors.push(`macro ${name}: ${(e as Error).message}`);
+        }
+      }
+
+      // Routes: the ones that went, then the new and the changed (every source and target is up by now).
+      const key = (r: { source: string; target: string }) => `${r.source}>${r.target}`;
+      const wanted = new Map(next.mods.map((r, i) => [key(r), i]));
+      const gone = doc.mods.filter((r) => !wanted.has(key(r)));
+      if (gone.length) {
+        doc.mods = doc.mods.filter((r) => wanted.has(key(r)));
+        for (const target of new Set(gone.map((r) => r.target))) this.syncModSum(target);
+      }
+      for (const r of next.mods) {
+        if (doc.mods.find((x) => key(x) === key(r))?.amount === r.amount) continue;
+        try {
+          this.modulateNow(r.source, r.target, r.amount);
+        } catch (e) {
+          errors.push(`route ${r.source} → ${r.target}: ${(e as Error).message}`);
+        }
+      }
+      // In the document's order: it decides which slot each source takes.
+      const sorted = [...doc.mods].sort((a, b) => (wanted.get(key(a)) ?? Infinity) - (wanted.get(key(b)) ?? Infinity));
+      if (sorted.some((r, i) => r !== doc.mods[i])) {
+        doc.mods = sorted;
+        for (const target of new Set(sorted.map((r) => r.target))) this.syncModSum(target);
+      }
+
+      // The surface (what still resolves) and the master.
+      doc.surface = next.surface.filter((s) => {
+        try {
+          this.resolveParamRef(s.ref);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (doc.master.level !== next.master.level) {
+        doc.master.level = next.master.level;
+        this.engine.send('/n_set', this.engine.masterNode, 'level', next.master.level);
+      }
+    });
+    this.releaseSamples();
+    this.changed();
+    return errors;
+  }
+
+  /** A running module takes a document's knobs and settings; says whether its mixer strip changed. */
+  private matchModule(path: string, want: ModuleDoc): boolean {
+    const live = this.live.get(path)!;
+    const d = this.doc.modules[path];
+    const target = live.node ?? live.group;
+    for (const p of live.compiled.params) {
+      const v = want.params[p.name] ?? p.default;
+      if (this.paramValue(path, p.name) === v) continue;
+      if (v === p.default) delete d.params[p.name];
+      else d.params[p.name] = v;
+      const ms = this.modsums.get(`${path}.${p.name}`);
+      if (ms) this.engine.send('/n_set', ms.node, 'pos', unmap(p.spec, v));
+      else if (target !== null) this.engine.send('/n_set', target, p.name, v);
+    }
+    d.fadeTime = want.fadeTime;
+    if (want.description === undefined) delete d.description;
+    else d.description = want.description;
+    const mixed = d.play !== want.play || d.level !== want.level || d.pan !== want.pan || d.mute !== want.mute || Boolean(d.solo) !== Boolean(want.solo);
+    d.play = want.play;
+    d.level = want.level;
+    d.pan = want.pan;
+    d.mute = want.mute;
+    if (want.solo) d.solo = true;
+    else delete d.solo;
+    return mixed;
+  }
+
   // ── listening ────────────────────────────────────────────────────────────
 
   /** Record a module's bus (or a subpatch's main outlet, or the master mix) and describe it. */

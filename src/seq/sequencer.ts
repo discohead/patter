@@ -183,6 +183,34 @@ export class Sequencer {
     return [...this.routines.keys()].map((n) => this.status(n)!);
   }
 
+  /**
+   * Bring the routines to a document's, changing only what differs: new or
+   * rewritten code is defined (a playing one swaps on its quant), one that
+   * only started or stopped starts or stops, and the ones that are gone go.
+   * The rest keep their place in the bar (a listener follows the host this way).
+   */
+  follow(routines: Record<string, { code: string; playing: boolean; quant: number; description?: string }>): string[] {
+    const errors: string[] = [];
+    for (const name of [...this.routines.keys()]) if (!routines[name]) this.remove(name);
+    for (const [name, r] of Object.entries(routines)) {
+      const current = this.routines.get(name);
+      try {
+        if (!current || (current.pending?.code ?? current.code) !== r.code || current.quant !== r.quant) this.define(name, r.code, { quant: r.quant, play: r.playing });
+        else if (current.playing !== r.playing) {
+          if (r.playing) this.play(name);
+          else this.stop(name);
+        }
+      } catch (e) {
+        errors.push(`routine ${name}: ${(e as Error).message}`);
+        continue;
+      }
+      const d = this.runtime.doc.routines[name];
+      if (d && r.description !== undefined) d.description = r.description;
+      else if (d) delete d.description;
+    }
+    return errors;
+  }
+
   /** Recreate routines from a document (after loading a patch). */
   load(routines: Record<string, { code: string; playing: boolean; quant: number }>): string[] {
     this.routines.clear();
