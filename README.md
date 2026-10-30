@@ -200,6 +200,10 @@ can't do is prompt, save, upload, rename, branch, or change the patch's
 structure. Those controls aren't greyed out on their page. They aren't there
 at all. Where the chat box would be, one line says who's driving.
 
+The conversation shows my messages, the agent's replies and its tool calls.
+Tool calls that read my library (AGENTS.md, the list of my samples) show up
+without their results.
+
 Off air, the last patch stays up (with "off air since 9:41 PM"), so whoever
 comes by later still gets something to play with.
 
@@ -219,9 +223,10 @@ anything on them. Everything else is public:
 
 A listener's page never asks for `/api` or `/agents`. If something else asks,
 Access turns it away at the edge before the Worker even runs. That rules out
-the model, the library, R2 writes and going on air. Anything a listener sends
-down the WebSocket, apart from a keep-alive ping, closes it, and `/whoami` and
-`/listen` are rate limited per IP.
+the model, the library, R2 writes and going on air. The WebSocket only opens
+for the page itself, the room holds 2,000 listeners (32 to an address), and
+anything a listener sends down it, apart from a keep-alive ping, closes it.
+`/whoami` and `/listen` are rate limited per IP.
 
 ### Why listeners don't cost me anything
 
