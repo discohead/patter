@@ -9,6 +9,7 @@ playwright-report
 public/supersonic
 public/supersonic-core
 public/synthdefs
+public/samples
 test-results
 scripts/ugen-catalog/*.jsonl
 scripts/ugen-catalog/*_raw.json
@@ -16,3 +17,4 @@ scripts/ugen-catalog/*-report.txt
 scripts/ugen-catalog/verify_*
 scripts/ugen-catalog/ugen-catalog.json
 scripts/ugen-catalog/sclang-last.log
+.DS_Store

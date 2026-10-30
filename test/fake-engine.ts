@@ -66,3 +66,40 @@ export class FakeEngine {
 }
 
 export const asEngine = (f: FakeEngine) => f as unknown as Engine;
+
+import type { LoadedSample, SampleSource } from '../src/engine/samples';
+
+/** A sample store that "loads" anything instantly, with shapes you set per source. */
+export class FakeBank implements SampleSource {
+  shapes: Record<string, { channels: number; frames: number }> = {};
+  kept: Set<string> | null = null;
+  private loaded = new Map<string, LoadedSample>();
+  private next = 16;
+
+  async ensure(src: string): Promise<LoadedSample> {
+    let s = this.loaded.get(src);
+    if (!s) {
+      const shape = this.shapes[src] ?? { channels: 2, frames: 96000 };
+      s = {
+        src,
+        bufnum: this.next++,
+        channels: shape.channels,
+        frames: shape.frames,
+        sampleRate: 48000,
+        duration: shape.frames / 48000,
+        peaks: new Float32Array(0),
+        analysis: { peakDb: -3, rmsDb: -15, onsets: [0], bpm: 120, beats: 4, beatsCandidates: [4], pitchHz: null, root: null, pitchConfidence: 0, kind: 'loop' },
+      };
+      this.loaded.set(src, s);
+    }
+    return s;
+  }
+
+  get(src: string): LoadedSample | undefined {
+    return this.loaded.get(src);
+  }
+
+  keepOnly(srcs: Set<string>): void {
+    this.kept = new Set(srcs);
+  }
+}

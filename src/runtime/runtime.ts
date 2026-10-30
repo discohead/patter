@@ -19,10 +19,12 @@ import { encodeSynthDefs, type SynthDefData } from '../sc/synthdef';
 import { compileModule, INTERNAL, type CompiledModule, type ModuleKind, type ModuleShape, type ParamInfo } from './module-def';
 import {
   checkPath, checkSegment, clonePatch, emptyPatch, join, leafOf, migratePatch, parentOf, relativeTo, within,
-  type AbstractionDoc, type InletDoc, type MacroDoc, type ModuleDoc, type PatchDoc, type SubpatchDoc, type SurfaceItem,
+  type AbstractionDoc, type InletDoc, type MacroDoc, type ModuleDoc, type PatchDoc, type SampleDoc, type SubpatchDoc, type SurfaceItem,
 } from './patch';
 export type { SubpatchDoc };
-import { childrenOf, instanceRootOf, parseRef, refsInCode, ResolveError, resolveMacro, resolveParam, resolveSource } from './resolve';
+import { childrenOf, instanceRootOf, parseRef, refsInCode, ResolveError, resolveMacro, resolveParam, resolveSample, resolveSource } from './resolve';
+import type { SampleSource } from '../engine/samples';
+import type { SampleAnalysis } from '../engine/sample-analysis';
 import { unmap, warpCode, type ControlSpec } from './specs';
 import { analyseAudio, analyseControl, type AudioAnalysis, type ControlAnalysis } from '../engine/analysis';
 
@@ -43,6 +45,8 @@ interface LiveModule {
   wiring: Record<string, number>;
   /** input() control → the module it reads (null: an unconnected inlet). */
   sources: Record<string, string | null>;
+  /** sample() control → the patch sample it plays. */
+  samples: Record<string, string>;
 }
 
 interface LiveModSum {
@@ -59,6 +63,8 @@ export interface ModuleReport {
   warnings: string[];
   ugens: number;
   replaced: boolean;
+  /** The samples it plays: sample(ref) → the patch sample. */
+  samples?: { ref: string; sample: string }[];
   /** Set when the module belongs to an abstraction instance and the edit reached its siblings. */
   abstraction?: { name: string; instancesUpdated: string[] };
 }
@@ -88,6 +94,8 @@ export interface SubpatchArgs {
   inlets?: Record<string, (Partial<InletDoc> & { from?: string | null }) | null>;
   /** name → inner ref; null removes */
   outlets?: Record<string, string | null>;
+  /** sample slot → a sample name in the parent's scope; null removes */
+  samples?: Record<string, string | null>;
   /** name → inner param ref or 'macro:name'; null removes */
   controls?: Record<string, string | null>;
 }
@@ -131,7 +139,11 @@ export class Runtime {
   private busy: Promise<unknown> = Promise.resolve();
   private silentAudio = -1;
 
-  constructor(readonly engine: Engine) {}
+  constructor(
+    readonly engine: Engine,
+    /** Where samples come from (the browser's bank; a fake in tests). */
+    readonly bank: SampleSource | null = null,
+  ) {}
 
   // ── change notification & history ────────────────────────────────────────
 
@@ -260,10 +272,26 @@ export class Runtime {
     return { module: r.module, rate: shape.rate, channels, bus: live.bus + offset };
   }
 
-  /** Resolve every input() of a live module; report whether the compiled shapes still hold. */
-  private computeWiring(m: LiveModule): { wiring: Record<string, number>; sources: Record<string, string | null>; shapeOk: boolean } {
+  /** The patch sample that sample(ref), in module `path`, plays. */
+  private sampleFor(path: string, ref: string): { name: string; doc: SampleDoc } {
+    const name = resolveSample(this.doc, parentOf(path), ref);
+    return { name, doc: this.doc.samples[name] };
+  }
+
+  /** Make sure the buffers a compiled module plays are loaded. */
+  private async loadSamplesOf(path: string, compiled: CompiledModule): Promise<void> {
+    if (!this.bank) return;
+    for (const s of compiled.samples) await this.bank.ensure(this.sampleFor(path, s.ref).doc.src);
+  }
+
+  /**
+   * Resolve every input() and sample() of a live module to the bus or buffer
+   * it means here; report whether the compiled shapes still hold.
+   */
+  private computeWiring(m: LiveModule): { wiring: Record<string, number>; sources: Record<string, string | null>; samples: Record<string, string>; shapeOk: boolean } {
     const wiring: Record<string, number> = {};
     const sources: Record<string, string | null> = {};
+    const samples: Record<string, string> = {};
     let shapeOk = true;
     for (const ref of m.compiled.refs) {
       try {
@@ -275,7 +303,19 @@ export class Runtime {
         shapeOk = false;
       }
     }
-    return { wiring, sources, shapeOk };
+    for (const s of m.compiled.samples) {
+      try {
+        const { name, doc } = this.sampleFor(m.path, s.ref);
+        wiring[s.control] = this.bank?.get(doc.src)?.bufnum ?? -1;
+        wiring[s.beats] = doc.beats ?? 4;
+        wiring[s.root] = doc.root ?? 60;
+        samples[s.control] = name;
+        if (doc.channels !== s.channels) shapeOk = false;
+      } catch {
+        shapeOk = false;
+      }
+    }
+    return { wiring, sources, samples, shapeOk };
   }
 
   /**
@@ -285,8 +325,9 @@ export class Runtime {
   private async rewireAll(warnings: string[] = []): Promise<void> {
     const recompile: string[] = [];
     for (const m of this.live.values()) {
-      const { wiring, sources, shapeOk } = this.computeWiring(m);
+      const { wiring, sources, samples, shapeOk } = this.computeWiring(m);
       m.sources = sources;
+      m.samples = samples;
       if (!shapeOk) {
         recompile.push(m.path);
         continue;
@@ -384,7 +425,12 @@ export class Runtime {
         const r = this.resolveInput(path, ref);
         return { rate: r.rate, channels: r.channels };
       },
+      resolveSample: (ref) => {
+        const { doc } = this.sampleFor(path, ref);
+        return { channels: doc.channels, frames: doc.frames, duration: doc.duration, beats: doc.beats, root: doc.root };
+      },
     });
+    await this.loadSamplesOf(path, compiled);
     const { defName } = await this.useDef(path, compiled.data);
     if (prev && prevDoc && prev.defName === defName) return this.updateInPlace(path, prev, compiled, args, prevDoc);
 
@@ -403,9 +449,11 @@ export class Runtime {
       code: args.code,
       params: keptParams,
       play: args.play ?? prevDoc?.play ?? args.kind !== 'control',
-      level: args.level ?? prevDoc?.level ?? 1,
-      pan: args.pan ?? prevDoc?.pan ?? 0,
+      // The mixer is the person's: redefining a module keeps its fader and pan.
+      level: prevDoc?.level ?? args.level ?? 1,
+      pan: prevDoc?.pan ?? args.pan ?? 0,
       mute: prevDoc?.mute ?? false,
+      ...(prevDoc?.solo ? { solo: true } : {}),
       fadeTime: args.fadeTime ?? prevDoc?.fadeTime ?? (args.kind === 'control' ? 0.2 : 0.5),
       description: args.description ?? prevDoc?.description,
     };
@@ -434,10 +482,12 @@ export class Runtime {
       meterId: prev?.meterId ?? this.engine.nextMeterId(),
       wiring: {},
       sources: {},
+      samples: {},
     };
     const w = this.computeWiring(live);
     live.wiring = w.wiring;
     live.sources = w.sources;
+    live.samples = w.samples;
     this.live.set(path, live);
 
     if (args.kind === 'voice') {
@@ -599,6 +649,7 @@ export class Runtime {
   /** The /s_new control list for a module node: bus wiring, fade, params. */
   private nodeControls(m: LiveModule, fade: number): (string | number)[] {
     const out: (string | number)[] = [INTERNAL.out, m.bus];
+    if (m.compiled.playhead) out.push(INTERNAL.playhead, m.meterId);
     if (m.compiled.kind !== 'voice') out.push(INTERNAL.fade, fade);
     for (const [control, bus] of Object.entries(m.wiring)) out.push(control, bus);
     out.push(...this.paramControls(m));
@@ -627,8 +678,9 @@ export class Runtime {
   private repointInputs(path: string) {
     const m = this.live.get(path);
     if (!m) return;
-    const { wiring, sources } = this.computeWiring(m);
+    const { wiring, sources, samples } = this.computeWiring(m);
     m.sources = sources;
+    m.samples = samples;
     const target = m.node ?? m.group;
     const pairs: (string | number)[] = [];
     for (const [control, bus] of Object.entries(wiring)) if (m.wiring[control] !== bus) pairs.push(control, bus);
@@ -678,7 +730,9 @@ export class Runtime {
       else this.engine.freeControl(m.bus, shape.channels);
     }, delay);
     this.live.delete(path);
+    const wasSolo = Boolean(doc?.solo);
     delete this.doc.modules[path];
+    if (wasSolo) this.syncMonitors();
     this.changed();
   }
 
@@ -719,16 +773,36 @@ export class Runtime {
     return this.paramValue(r.module, r.param);
   }
 
-  setMonitor(module: string, opts: { play?: boolean; level?: number; pan?: number; mute?: boolean }): void {
+  setMonitor(module: string, opts: { play?: boolean; level?: number; pan?: number; mute?: boolean; solo?: boolean }): void {
     const doc = this.doc.modules[module];
     if (!doc) throw new Error(`no module '${module}'`);
+    const wasSoloing = this.soloing();
     if (opts.play !== undefined) doc.play = opts.play;
-    if (opts.level !== undefined) doc.level = opts.level;
-    if (opts.pan !== undefined) doc.pan = opts.pan;
+    if (opts.level !== undefined) doc.level = Math.max(0, Math.min(4, opts.level));
+    if (opts.pan !== undefined) doc.pan = Math.max(-1, Math.min(1, opts.pan));
     if (opts.mute !== undefined) doc.mute = opts.mute;
-    this.syncMonitor(module);
+    if (opts.solo) doc.solo = true;
+    else if (opts.solo === false) delete doc.solo;
+    // A solo changes what every other module's mute means.
+    if (opts.solo !== undefined || this.soloing() !== wasSoloing) this.syncMonitors();
+    else this.syncMonitor(module);
     if (opts.play !== undefined) this.propagatePlay(module, opts.play);
     this.changed();
+  }
+
+  /** Some module playing into the master is soloed: only soloed ones are heard. */
+  soloing(): boolean {
+    return Object.values(this.doc.modules).some((d) => d.solo && d.play && d.kind !== 'control');
+  }
+
+  /** Muted, or silent because others are soloed. */
+  silenced(module: string): boolean {
+    const d = this.doc.modules[module];
+    return Boolean(d && (d.mute || (!d.solo && this.soloing())));
+  }
+
+  private syncMonitors() {
+    for (const path of this.live.keys()) this.syncMonitor(path);
   }
 
   /** Whether a module plays to the mix is part of an abstraction (level, pan and mute stay per instance). */
@@ -763,7 +837,7 @@ export class Runtime {
       return;
     }
     this.freeMeter(m);
-    const settings: (string | number)[] = ['inBus', m.bus, 'out', this.engine.masterBus, 'level', doc.level, 'pan', doc.pan, 'mute', doc.mute ? 1 : 0, 'meterId', m.meterId];
+    const settings: (string | number)[] = ['inBus', m.bus, 'out', this.engine.masterBus, 'level', doc.level, 'pan', doc.pan, 'mute', this.silenced(path) ? 1 : 0, 'meterId', m.meterId];
     if (m.monitor !== null && m.monitorChannels === monChannels) {
       this.engine.send('/n_set', m.monitor, ...settings);
       return;
@@ -1045,6 +1119,70 @@ export class Runtime {
     this.engine.send('/c_set', bus, doc.bipolar ? doc.value * 2 - 1 : doc.value);
   }
 
+  // ── samples ──────────────────────────────────────────────────────────────
+
+  /**
+   * Put audio in the patch under a name, or change what's there (new audio,
+   * its beats, its root). Modules playing it follow at once, without
+   * restarting unless the channel count changed. A new loop's beats and a
+   * pitched sample's root come from the analysis unless given.
+   */
+  defineSample(
+    name: string,
+    args: { src?: string; file?: string; beats?: number | null; root?: number | null; description?: string },
+  ): Promise<{ name: string; sample: SampleDoc; analysis: SampleAnalysis | null; users: string[]; warnings: string[] }> {
+    return this.exclusive(async () => {
+      checkSegment(name, 'sample names');
+      if (!this.bank) throw new Error('samples need the audio engine running');
+      const prev = this.doc.samples[name];
+      const src = args.src ?? prev?.src;
+      if (!src) throw new Error(`a new sample needs audio: from 'stock:<name>' (Sonic Pi's pack) or 'lib:<sha256>' (the library)`);
+      if (args.beats !== undefined && args.beats !== null && !(args.beats > 0)) throw new Error('beats must be a positive number');
+      const loaded = await this.bank.ensure(src);
+      const same = prev?.src === src;
+      const a = loaded.analysis;
+      const sample: SampleDoc = {
+        src,
+        file: args.file ?? (same ? prev?.file : undefined),
+        channels: loaded.channels,
+        frames: loaded.frames,
+        duration: Math.round(loaded.duration * 10000) / 10000,
+        beats: args.beats === null ? undefined : args.beats ?? (same ? prev?.beats : a.kind === 'loop' ? a.beats ?? undefined : undefined),
+        root: args.root === null ? undefined : args.root ?? (same ? prev?.root : a.root ?? undefined),
+        description: args.description ?? prev?.description,
+      };
+      for (const k of Object.keys(sample) as (keyof SampleDoc)[]) if (sample[k] === undefined) delete sample[k];
+      this.doc.samples[name] = sample;
+      const warnings: string[] = [];
+      await this.rewireAll(warnings);
+      this.releaseSamples();
+      this.changed();
+      return { name, sample, analysis: a, users: this.sampleUsers(name), warnings };
+    });
+  }
+
+  /** Take a sample out of the patch (nothing may be playing it). */
+  removeSample(name: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (!this.doc.samples[name]) throw new Error(`no sample '${name}'`);
+      const users = this.sampleUsers(name);
+      if (users.length) throw new Error(`'${name}' is played by ${users.join(', ')}; change or remove those first`);
+      delete this.doc.samples[name];
+      this.releaseSamples();
+      this.changed();
+    });
+  }
+
+  /** Modules playing a patch sample. */
+  sampleUsers(name: string): string[] {
+    return [...this.live.values()].filter((m) => Object.values(m.samples).includes(name)).map((m) => m.path);
+  }
+
+  /** Let the bank free the buffers no patch sample uses any more. */
+  private releaseSamples() {
+    this.bank?.keepOnly(new Set(Object.values(this.doc.samples).map((x) => x.src)));
+  }
+
   // ── surface ──────────────────────────────────────────────────────────────
 
   setSurface(items: SurfaceItem[]): void {
@@ -1116,6 +1254,19 @@ export class Runtime {
         warnings.push(`control '${name}': ${(e as Error).message}`);
       }
       sub.controls[name] = ref;
+    }
+    for (const [slot, target] of Object.entries(args.samples ?? {})) {
+      checkSegment(slot, 'sample slot names');
+      if (target === null) {
+        if (sub.samples) delete sub.samples[slot];
+        continue;
+      }
+      try {
+        resolveSample(this.doc, parentOf(path), target);
+      } catch (e) {
+        warnings.push(`sample slot '${slot}': ${(e as Error).message}`);
+      }
+      (sub.samples ??= {})[slot] = target;
     }
   }
 
@@ -1401,7 +1552,7 @@ export class Runtime {
   }
 
   /** Make a new instance of an abstraction at `path`. */
-  instantiate(name: string, path: string, opts: { inlets?: Record<string, string | null>; params?: Record<string, number>; description?: string } = {}): Promise<{ path: string; modules: string[]; warnings: string[] }> {
+  instantiate(name: string, path: string, opts: { inlets?: Record<string, string | null>; samples?: Record<string, string>; params?: Record<string, number>; description?: string } = {}): Promise<{ path: string; modules: string[]; warnings: string[] }> {
     return this.exclusive(async () => {
       const warnings: string[] = [];
       const modules = await this.structural(path, (map) => this.instantiateNow(name, map(path), opts, warnings), warnings);
@@ -1410,7 +1561,7 @@ export class Runtime {
     });
   }
 
-  private async instantiateNow(name: string, path: string, opts: { inlets?: Record<string, string | null>; params?: Record<string, number>; description?: string }, warnings: string[]): Promise<string[]> {
+  private async instantiateNow(name: string, path: string, opts: { inlets?: Record<string, string | null>; samples?: Record<string, string>; params?: Record<string, number>; description?: string }, warnings: string[]): Promise<string[]> {
     const abs = this.doc.abstractions[name];
     if (!abs) throw new Error(`no abstraction '${name}' (have: ${Object.keys(this.doc.abstractions).join(', ') || 'none'})`);
     checkPath(path, 'subpatch names');
@@ -1570,12 +1721,16 @@ export class Runtime {
   }
 
   /** Build an expanded abstraction at `path`. */
-  private async materialize(flat: Flat, path: string, opts: { inlets?: Record<string, string | null>; params?: Record<string, number>; description?: string; link?: string }, warnings: string[]): Promise<string[]> {
+  private async materialize(flat: Flat, path: string, opts: { inlets?: Record<string, string | null>; samples?: Record<string, string>; params?: Record<string, number>; description?: string; link?: string }, warnings: string[]): Promise<string[]> {
     for (const [rel, sd] of Object.entries(flat.subpatches)) this.doc.subpatches[rel ? join(path, rel) : path] = JSON.parse(JSON.stringify(sd));
     const root = (this.doc.subpatches[path] ??= { inlets: {}, outlets: {}, controls: {} });
     if (opts.link) root.abstraction = opts.link;
     else delete root.abstraction;
     if (opts.description !== undefined) root.description = opts.description;
+    for (const [slot, target] of Object.entries(opts.samples ?? {})) {
+      if (!root.samples?.[slot]) warnings.push(`'${path}' has no sample slot '${slot}' (slots: ${Object.keys(root.samples ?? {}).join(', ') || 'none'})`);
+      (root.samples ??= {})[slot] = target;
+    }
     for (const [inlet, from] of Object.entries(opts.inlets ?? {})) {
       if (!root.inlets[inlet]) {
         warnings.push(`'${path}' has no inlet '${inlet}' (inlets: ${Object.keys(root.inlets).join(', ') || 'none'})`);
@@ -1798,6 +1953,10 @@ export class Runtime {
       const target = rel ? join(other, rel) : other;
       const existing = this.doc.subpatches[target];
       const next = JSON.parse(JSON.stringify(def)) as SubpatchDoc;
+      if (!rel && def.samples) {
+        // Its slots are the abstraction's; which sample each plays stays the instance's own.
+        next.samples = Object.fromEntries(Object.keys(def.samples).map((k) => [k, existing?.samples?.[k] ?? def.samples![k]]));
+      }
       if (!rel) {
         // The interface follows the abstraction; the connections stay the instance's own.
         next.abstraction = name;
@@ -1823,7 +1982,7 @@ export class Runtime {
     if (m.compiled.kind !== 'voice' || m.group === null) throw new Error(`'${module}' is a ${m.compiled.kind} module; play() needs a voice module (use set() for others)`);
     const id = this.engine.nextNodeId();
     const wiring = Object.entries(m.wiring).flat();
-    const controls = [INTERNAL.out, m.bus, ...wiring, ...this.paramControls(m, args)];
+    const controls = [INTERNAL.out, m.bus, ...(m.compiled.playhead ? [INTERNAL.playhead, m.meterId] : []), ...wiring, ...this.paramControls(m, args)];
     return { id, msgs: [['/s_new', m.defName, id, 1, m.group, ...controls]] };
   }
 
@@ -1888,6 +2047,7 @@ export class Runtime {
       this.doc = emptyPatch();
       this.doc.title = title;
     });
+    this.releaseSamples();
     this.changed();
   }
 
@@ -1903,8 +2063,19 @@ export class Runtime {
     this.doc = {
       ...emptyPatch(),
       title: next.title, bpm: next.bpm, master: next.master, notes: next.notes, routines: next.routines,
-      subpatches: next.subpatches, abstractions: next.abstractions,
+      subpatches: next.subpatches, abstractions: next.abstractions, samples: next.samples,
     };
+    // The samples, before the modules that play them (all at once).
+    if (this.bank) {
+      await Promise.all(
+        Object.entries(next.samples).map(([name, x]) =>
+          this.bank!.ensure(x.src).catch((e) => {
+            errors.push(`sample ${name}: ${(e as Error).message}`);
+          }),
+        ),
+      );
+    }
+    this.releaseSamples();
     // Modules, in dependency order: retry the ones whose inputs aren't up yet.
     // (Docs for every module are in place first, so lexical lookups can see them.)
     const pending = new Map(Object.entries(next.modules));
@@ -1955,6 +2126,7 @@ export class Runtime {
     });
     this.setSurface(surface);
     this.setMasterLevel(next.master.level);
+    if (this.soloing()) this.syncMonitors();
     this.changed();
     return errors;
   }
@@ -2026,6 +2198,7 @@ export class Runtime {
         modulated: this.modsums.has(`${path}.${p.name}`),
       })),
       inputs: m.compiled.refs.map((r) => ({ ref: r.ref, from: m.sources[r.control] ?? '(unconnected inlet: silence)' })),
+      ...(m.compiled.samples.length ? { samples: m.compiled.samples.map((x) => ({ ref: x.ref, sample: m.samples[x.control] ?? '?' })) } : {}),
       warnings,
       ugens: m.compiled.data.ugens.length,
       replaced,

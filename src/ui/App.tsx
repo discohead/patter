@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { app, useEmitter } from '../app/store';
 import { AgentChat } from './AgentChat';
 import { Inspector } from './Inspector';
-import { PatchMenu } from './PatchMenu';
+import { Dialogs } from './Dialogs';
+import { Navigator } from './Navigator';
 import { Panels } from './Panels';
+import { SessionMenu } from './SessionMenu';
 import { PatchGraph } from './PatchGraph';
+import { CaptureButton, RecordButton, Toast } from './Takes';
 
 function MasterMeter() {
   const bars = useRef<(HTMLDivElement | null)[]>([]);
@@ -49,6 +52,8 @@ function Transport() {
       >
         {app.stopped ? '▶' : '■'}
       </button>
+      <RecordButton />
+      <CaptureButton />
       <label>
         <input
           className="bpm"
@@ -95,19 +100,54 @@ function Settings({ onClose }: { onClose: () => void }) {
         <input type="checkbox" checked={s.autoSendVoice} onChange={(e) => app.updateSettings({ autoSendVoice: e.target.checked })} />
         send voice input when I let go
       </label>
-      <div className="row between">
-        <div className="row">
-          <button className="ghost" onClick={() => app.clearConversation()}>clear conversation</button>
-          <button
-            className="ghost"
-            onClick={() => {
-              onClose();
-              app.showDialog('new');
-            }}
-          >
-            new session
-          </button>
-        </div>
+      <h4>Recording</h4>
+      <label>
+        ⟲ capture keeps the last
+        <select value={s.captureMinutes} onChange={(e) => app.updateSettings({ captureMinutes: Number(e.target.value) })}>
+          {[1, 2, 3, 5, 10, 15, 20].map((m) => (
+            <option key={m} value={m}>
+              {m} minute{m === 1 ? '' : 's'} (about {Math.round((m * 60 * (app.engine.booted ? app.engine.sampleRate : 48000) * 8) / 1e6)} MB of memory)
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={s.autoDownload} onChange={(e) => app.updateSettings({ autoDownload: e.target.checked })} />
+        download each take as soon as it's done
+      </label>
+      <h4>Sessions</h4>
+      <div className="row wrap">
+        <button
+          className="ghost"
+          title="a fresh session with this patch; this one stays in the library"
+          onClick={() => {
+            onClose();
+            void app.freshStart().catch((e) => app.showToast((e as Error).message, { error: true }));
+          }}
+        >
+          clear the conversation
+        </button>
+        <button
+          className="ghost"
+          onClick={() => {
+            onClose();
+            void app.newSession(null);
+          }}
+        >
+          new session
+        </button>
+        <button
+          className="ghost"
+          title="what every session reads, wherever it is"
+          onClick={() => {
+            onClose();
+            app.showDialog({ kind: 'context', level: 'person' });
+          }}
+        >
+          your AGENTS.md…
+        </button>
+      </div>
+      <div className="row end">
         <button onClick={onClose}>done</button>
       </div>
     </div>
@@ -129,25 +169,86 @@ function Log() {
   );
 }
 
-/** ⌘. stops and plays (SuperCollider's own), ⌘S saves, ⌘O opens — from anywhere. */
+/**
+ * ⌘. stops and plays (SuperCollider's own), ⌘S keeps a checkpoint, ⌘O finds
+ * a session, ⌘\ shows the library, ⌥R (or F9) records the mix, ⌥C captures
+ * its last minutes — from anywhere, the chat box too.
+ */
 function useGlobalKeys() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // ⌥ letters type characters (®, ç) on a Mac: match the key, not the character.
+      const plainAlt = e.altKey && !e.metaKey && !e.ctrlKey;
+      if ((plainAlt && e.code === 'KeyR') || (e.key === 'F9' && !e.metaKey && !e.ctrlKey && !e.altKey)) {
+        e.preventDefault();
+        if (!e.repeat) app.toggleRecord();
+        return;
+      }
+      if (plainAlt && e.code === 'KeyC') {
+        e.preventDefault();
+        if (!e.repeat) void app.capture();
+        return;
+      }
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key === '.') {
         e.preventDefault();
         app.toggleTransport();
       } else if (e.key.toLowerCase() === 's' && !e.shiftKey) {
         e.preventDefault();
-        if (app.state === 'ready') void app.save().catch((err) => app.engine.info(`save failed: ${(err as Error).message}`));
+        void app.checkpointNow();
       } else if (e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        if (app.state === 'ready') app.showDialog('open');
+        app.toggleNav(true);
+        setTimeout(() => app.focusLibrarySearch(), 0);
+      } else if (e.key === '\\') {
+        e.preventDefault();
+        app.toggleNav();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+}
+
+/** Audio files dragged onto the page go into the patch (and the library). */
+function useFileDrop(): boolean {
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const enter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth++;
+      setOver(true);
+    };
+    const leave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) setOver(false);
+    };
+    const overHandler = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault();
+    };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setOver(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      app.addFiles(files).catch((err) => app.engine.info((err as Error).message));
+    };
+    window.addEventListener('dragenter', enter);
+    window.addEventListener('dragleave', leave);
+    window.addEventListener('dragover', overHandler);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', enter);
+      window.removeEventListener('dragleave', leave);
+      window.removeEventListener('dragover', overHandler);
+      window.removeEventListener('drop', drop);
+    };
+  }, []);
+  return over;
 }
 
 function StartScreen() {
@@ -192,6 +293,7 @@ export function App() {
   useEmitter(app.uiEvents);
   useEmitter(app.patchEvents);
   useGlobalKeys();
+  const dropping = useFileDrop();
   const [showSettings, setShowSettings] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const rt = app.runtime;
@@ -200,8 +302,7 @@ export function App() {
     <div className={`app${app.stopped ? ' is-stopped' : ''}`}>
       <header className="top">
         <div className="brand-row">
-          <span className="brand">patter</span>
-          <PatchMenu />
+          <SessionMenu />
         </div>
         {app.state === 'ready' ? <Transport /> : <div />}
         <div className="row">
@@ -215,9 +316,16 @@ export function App() {
 
       <StartScreen />
 
-      <main className="main">
+      <main className={`main${app.navOpen ? ' with-nav' : ''}`}>
+        {app.navOpen && (
+          <aside className="nav-col">
+            <Navigator />
+          </aside>
+        )}
         <aside className="left">
-          <AgentChat key={app.session} />
+          <Suspense key={app.session} fallback={<div className="chat-loading dim">opening the conversation…</div>}>
+            <AgentChat />
+          </Suspense>
         </aside>
         <section className="center">
           <div className="graph-wrap">
@@ -234,6 +342,13 @@ export function App() {
       </main>
       {showLog && <Log />}
       {showSettings && <Settings onClose={() => setShowSettings(false)} />}
+      <Dialogs />
+      <Toast />
+      {dropping && (
+        <div className="drop-overlay">
+          <div>{app.state === 'ready' ? 'Drop audio files to add them to the patch' : 'Start audio first, then drop the files'}</div>
+        </div>
+      )}
     </div>
   );
 }

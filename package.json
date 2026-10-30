@@ -27,6 +27,7 @@
     "react-dom": "^19.3.1",
     "supersonic-scsynth": "^0.91.0",
     "supersonic-scsynth-core": "^0.91.0",
+    "supersonic-scsynth-samples": "^0.91.0",
     "supersonic-scsynth-synthdefs": "^0.91.0",
     "zod": "^4.6.7"
   },
@@ -42,5 +43,11 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
+  },
+  "license": "AGPL-3.0-or-later",
+  "author": "Jared McFarland",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/discohead/patter.git"
   }
 }

@@ -125,6 +125,27 @@ export function resolveSource(doc: PatchDoc, scope: string, ref: string, seen: S
   throw new ResolveError(`bad reference '${ref}'`);
 }
 
+/**
+ * The patch sample that sample(ref), written in `scope`, plays: the nearest
+ * enclosing subpatch slot of that name (followed into its parent's scope), or
+ * else the patch sample itself.
+ */
+export function resolveSample(doc: PatchDoc, scope: string, ref: string, seen: Set<string> = new Set()): string {
+  for (let s = scope; ; s = parentOf(s)) {
+    const slot = doc.subpatches[s]?.samples?.[ref];
+    if (slot !== undefined && s) {
+      const key = `${s}|${ref}`;
+      if (seen.has(key)) throw new ResolveError(`sample slot '${ref}' refers to itself`);
+      seen.add(key);
+      return resolveSample(doc, parentOf(s), slot, seen);
+    }
+    if (!s) break;
+  }
+  if (doc.samples[ref]) return ref;
+  const names = Object.keys(doc.samples);
+  throw new ResolveError(`no sample '${ref}'${names.length ? ` (samples: ${names.join(', ')})` : ' (the patch has no samples yet: add one with the samples tool)'}`);
+}
+
 /** Find a macro by name, from `scope` outwards. */
 export function resolveMacro(doc: PatchDoc, scope: string, name: string): string | null {
   if (name.startsWith('/')) return doc.macros[name.slice(1)] ? name.slice(1) : null;

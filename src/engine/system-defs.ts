@@ -16,13 +16,18 @@ function build(def: SystemDef): Uint8Array {
   return buildSynthDef(def.name, def.params, def.code).bytes;
 }
 
+/** The master limiter's lookahead (s). It delays the whole mix by twice this. */
+const LIMITER_LOOKAHEAD = 0.01;
+/** How much later than the engine plays something it leaves the master (s): what a recording of the output allows for. */
+export const MASTER_DELAY = 2 * LIMITER_LOOKAHEAD;
+
 /** Master: mix bus → gain → DC block → limiter → hardware out, with a meter. */
 const master: SystemDef = {
   name: 'patter_master',
   params: { inBus: 0, level: 0.8, limit: 1 },
   code: `
     const sig = LeakDC.ar(In.ar(inBus, 2)) * level.lag(0.05);
-    const safe = Select.ar(limit, [sig, Limiter.ar(sig, 0.95, 0.01)]);
+    const safe = Select.ar(limit, [DelayN.ar(sig, ${MASTER_DELAY}, ${MASTER_DELAY}), Limiter.ar(sig, 0.95, ${LIMITER_LOOKAHEAD})]);
     SendPeakRMS.kr(safe, 20, 3, '/patter/master', 0);
     Out.ar(0, Sanitize.ar(safe));
   `,
@@ -79,6 +84,46 @@ function meter(n: number, rate: 'audio' | 'control'): SystemDef {
   };
 }
 
+/** Audition: play a buffer once into the master mix (the Samples tab's ▶). */
+function audition(n: 1 | 2): SystemDef {
+  return {
+    name: `patter_audition_${n}`,
+    params: { buf: 0, out: 0, amp: 0.8 },
+    code: `
+      const sig = PlayBuf.ar(${n}, buf, BufRateScale.kr(buf), 1, 0, 0, 2) * amp;
+      Out.ar(out, ${n === 1 ? 'Pan2.ar(sig, 0)' : 'sig'});
+    `,
+  };
+}
+
+/**
+ * Recorder: waits for the next bar line of the session (sample-accurate, on
+ * the beat grid routines use), then records its bus into the buffer until
+ * the buffer is full, and goes.
+ */
+function recorder(n: 1 | 2): SystemDef {
+  return {
+    name: `patter_recorder_${n}`,
+    params: { inBus: 0, buf: 0 },
+    code: `
+      const bar = BeatPhase.ar(4);
+      const go = SetResetFF.ar(bar < Delay1.ar(bar), 0);
+      RecordBuf.ar(InFeedback.ar(inBus, ${n}), buf, 0, 1, 0, go, 0, 0, 2);
+    `,
+  };
+}
+
+/** Clock probe: started by a timed bundle, it reports the engine's beat (raw LinkPhase) once and goes. */
+const clockProbe: SystemDef = {
+  name: 'patter_clockprobe',
+  params: {},
+  code: `
+    const now = Impulse.kr(0);
+    SendReply.kr(now, '/patter/clock', [LinkPhaseRaw.kr(768)]);
+    FreeSelf.kr(now);
+  `,
+};
+
 /** Probe: copy a bus into a scope slot so the page can analyse it. */
 function probe(n: number, rate: 'audio' | 'control'): SystemDef {
   const read = rate === 'audio' ? `InFeedback.ar(inBus, ${n})` : `K2A.ar(In.kr(inBus, ${n}))`;
@@ -95,6 +140,7 @@ function probe(n: number, rate: 'audio' | 'control'): SystemDef {
 export function systemDefs(): { name: string; bytes: Uint8Array }[] {
   const defs: SystemDef[] = [master, modsum, ...MONITOR_CHANNELS.map(monitor)];
   for (const n of MONITOR_CHANNELS) defs.push(meter(n, 'audio'), meter(n, 'control'));
+  defs.push(audition(1), audition(2), recorder(1), recorder(2), clockProbe);
   for (const n of [1, 2, 4, 8]) {
     defs.push(probe(n, 'audio'), probe(n, 'control'));
   }

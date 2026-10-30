@@ -12,6 +12,7 @@ import { baseScope, ugenClasses } from '../sc/scope';
 import { finishSynthDef, type SynthDefData } from '../sc/synthdef';
 import { GraphBuilder, GraphError, Sig, bin, rateOf, withBuilder, type SigLike } from '../sc/ugen';
 import { raw, toRate } from '../sc/methods';
+import { makeSampleHandle, moduleKind } from '../sc/samplers';
 import { toSpec, type ControlSpec, type SpecInput } from './specs';
 
 export type ModuleKind = 'audio' | 'control' | 'voice';
@@ -45,6 +46,28 @@ export interface ModuleRef {
   channels: number;
 }
 
+/**
+ * One sample() a module plays. The ref is kept as written; the runtime
+ * resolves it per instance and sends the buffer number, the sample's beats
+ * and its root note on these controls.
+ */
+export interface ModuleSample {
+  ref: string;
+  control: string;
+  beats: string;
+  root: string;
+  channels: number;
+}
+
+/** What sample(ref) is, as the compiler needs to know it. */
+export interface SampleShape {
+  channels: number;
+  frames: number;
+  duration: number;
+  beats?: number;
+  root?: number;
+}
+
 /** What input(ref) would read, as the compiler needs to know it. */
 export interface InputShape {
   rate: 'audio' | 'control';
@@ -57,6 +80,9 @@ export interface CompiledModule {
   kind: ModuleKind;
   params: ParamInfo[];
   refs: ModuleRef[];
+  samples: ModuleSample[];
+  /** It reports a looping sampler's playhead (on the module's meter id). */
+  playhead: boolean;
   shape: ModuleShape;
   warnings: string[];
   ugenCount: number;
@@ -68,6 +94,8 @@ export interface CompileRequest {
   code: string;
   /** What input(ref) reads; throws with a helpful message when it can't be found. */
   resolve: (ref: string) => InputShape;
+  /** What sample(ref) plays; throws when there's no such sample. */
+  resolveSample?: (ref: string) => SampleShape;
 }
 
 export const INTERNAL = {
@@ -75,6 +103,11 @@ export const INTERNAL = {
   gate: '__gate',
   fade: '__fade',
   inPrefix: '__in_',
+  samplePrefix: '__smp_',
+  beatsPrefix: '__sbt_',
+  rootPrefix: '__srt_',
+  /** A looping sampler's playhead replies carry the module's meter id. */
+  playhead: '__pid',
 } as const;
 
 const MAX_CHANNELS = 16;
@@ -142,6 +175,8 @@ export function compileModule(req: CompileRequest): CompiledModule {
   const g = new GraphBuilder();
   const params: ParamInfo[] = [];
   const refs: ModuleRef[] = [];
+  const samples: ModuleSample[] = [];
+  moduleKind.set(g, req.kind);
   const guard = new LoopGuard(200_000);
   let line = 0;
 
@@ -204,6 +239,36 @@ export function compileModule(req: CompileRequest): CompiledModule {
       if (shape.rate === 'audio') return raw('InFeedback', 'audio', [busSig], channels, { pure: true });
       return raw('In', 'control', [busSig], channels, { pure: true });
     },
+    sample: (ref: unknown) => {
+      if (typeof ref !== 'string' || !ref) throw new ModuleCompileError(`sample() takes a sample name like 'amen'`);
+      if (!req.resolveSample) throw new ModuleCompileError(`sample('${ref}'): samples aren't available here`);
+      let shape: SampleShape;
+      try {
+        shape = req.resolveSample(ref);
+      } catch (e) {
+        throw new ModuleCompileError(`sample('${ref}'): ${(e as Error).message}`);
+      }
+      // Numbered like input()'s controls: the SynthDef doesn't depend on the name.
+      let entry = samples.find((x) => x.ref === ref);
+      if (!entry) {
+        const i = samples.length;
+        entry = { ref, control: `${INTERNAL.samplePrefix}${i}`, beats: `${INTERNAL.beatsPrefix}${i}`, root: `${INTERNAL.rootPrefix}${i}`, channels: shape.channels };
+        samples.push(entry);
+        // Fixed defaults: the runtime sends the real values, and the bytes
+        // must not depend on the sample (so instances share one SynthDef).
+        g.control(entry.control, 'control', [0]);
+        g.control(entry.beats, 'control', [4]);
+        g.control(entry.root, 'control', [60]);
+      }
+      const ctl = (name: string) => g.controls.find((c) => c.name === name)!.sigs[0];
+      return makeSampleHandle(ctl(entry.control), {
+        sampleName: ref,
+        channels: entry.channels,
+        beats: ctl(entry.beats),
+        root: ctl(entry.root),
+        info: { frames: shape.frames, duration: shape.duration, beats: shape.beats, root: shape.root },
+      });
+    },
   };
 
   let result: unknown;
@@ -260,6 +325,8 @@ export function compileModule(req: CompileRequest): CompiledModule {
     kind: req.kind,
     params,
     refs,
+    samples,
+    playhead: g.controls.some((c) => c.name === INTERNAL.playhead),
     shape: { rate: outRate, channels: channels.length, outputs },
     warnings: built.warnings,
     ugenCount: built.data.ugens.length,

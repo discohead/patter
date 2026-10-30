@@ -11,14 +11,14 @@ export type UGenClass = Fn & Record<string, Fn>;
 
 const isNum = (x: unknown): x is number => typeof x === 'number';
 
-function cls(methods: Record<string, Fn>, direct?: Fn): UGenClass {
+export function cls(methods: Record<string, Fn>, direct?: Fn): UGenClass {
   const f = (direct ?? methods.new ?? methods.ar ?? methods.kr) as UGenClass;
   const out = ((...a: unknown[]) => f(...a)) as UGenClass;
   Object.assign(out, methods);
   return out;
 }
 
-function sig(label: string, name: string, v: unknown, dflt?: SigLike): SigLike {
+export function sig(label: string, name: string, v: unknown, dflt?: SigLike): SigLike {
   if (v === undefined || v === null) {
     if (dflt !== undefined) return dflt;
     throw new GraphError(`${label}: argument '${name}' is required`);

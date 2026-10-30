@@ -6,17 +6,24 @@
 // never start audio themselves: a call that arrives first (after a reload
 // mid-turn, say) waits for the click and the session's patch. Stopping the
 // turn drops every call that hasn't run, for good.
+//
+// Every message is a place to branch from (assistant-ui's action bars): edit
+// or retry one of yours, or go on differently from an answer, and a new
+// session starts there with the patch as it was. Where sessions go different
+// ways, ‹ n/m › flips between them. ◆ marks the checkpoints along the way.
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk';
 import {
-  AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAui, useAuiState,
+  ActionBarPrimitive, AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive, ThreadPrimitive, useAui, useAuiState,
   type ToolCallMessagePartProps,
 } from '@assistant-ui/react';
+import type { UIMessage } from 'ai';
 import { app, useEmitter } from '../app/store';
 import { runTool, summarizePatch } from '../agent/tools';
+import { branchesAt, UNTITLED } from '../app/tree';
 import { PushToTalk, speechSupported } from './speech';
 
 // ── text rendering ──────────────────────────────────────────────────────────
@@ -80,11 +87,13 @@ const TOOL_LABEL: Record<string, string> = {
   define_macro: 'macro', remove_macro: 'remove macro', define_routine: 'routine', routine_control: 'routine',
   set_tempo: 'tempo', mix: 'mix', expose_controls: 'surface', listen: 'listen', inspect: 'inspect',
   graph: 'graph', trace: 'trace', ugen_reference: 'reference', clear_patch: 'clear', annotate: 'notes',
-  subpatch: 'subpatch', abstraction: 'abstraction',
+  subpatch: 'subpatch', abstraction: 'abstraction', samples: 'samples', context: 'AGENTS.md',
 };
 
 function subjectOf(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return '';
+  if (name === 'samples') return `${args.action ?? ''} ${args.name ?? args.query ?? args.where ?? ''}${args.from ? ` ← ${args.from}` : ''}`.trim();
+  if (name === 'context') return `${args.action ?? ''} ${args.action === 'read' ? '' : args.level ?? 'song'}`.trim();
   if (name === 'subpatch' || name === 'abstraction') {
     const members = Array.isArray(args.members) ? ` (${(args.members as string[]).join(', ')})` : '';
     const what = name === 'abstraction' && args.action === 'instantiate' ? `${args.name} → ${args.path}` : name === 'abstraction' && args.action === 'save' ? `${args.path} as ${args.name}` : args.path ?? args.name ?? '';
@@ -131,21 +140,218 @@ function ToolCard(props: ToolCallMessagePartProps) {
   );
 }
 
-// ── messages & composer ─────────────────────────────────────────────────────
+// ── messages: branching, checkpoints ────────────────────────────────────────
+
+/** The conversation as the agent keeps it (assistant-ui's view joins and renumbers; branches count these). */
+const ChatInfo = createContext<{ messages: UIMessage[] }>({ messages: [] });
+
+const textOf = (m: UIMessage | undefined) =>
+  (m?.parts ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('').replace(/<patch_state>[\s\S]*<\/patch_state>/g, '').trim();
+
+/** Run an action from a button; say what went wrong. */
+const act = (p: Promise<unknown>) => void p.catch((e) => app.showToast((e as Error).message, { error: true }));
+
+function time(t: number) {
+  return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** ‹ n/m ›: the sessions that go different ways from this message. */
+function Branches({ index }: { index: number }) {
+  useEmitter(app.uiEvents);
+  const list = branchesAt(app.tree.sessions, app.session, index);
+  if (list.length < 2) return null;
+  const at = Math.max(0, list.indexOf(app.session));
+  const titleOf = (n: string) => {
+    const t = n === app.session ? app.runtime.doc.title : app.tree.sessions.find((s) => s.name === n)?.title ?? '';
+    return t === UNTITLED ? 'untitled session' : t;
+  };
+  const go = (k: number) => act(app.openSession(list[(k + list.length) % list.length]));
+  return (
+    <div className="branch-picker" title={list.map((n, i) => `${i + 1}. ${titleOf(n)}${n === app.session ? ' (here)' : ''}`).join('\n')}>
+      <button className="ghost tiny" onClick={() => go(at - 1)} aria-label="previous branch">‹</button>
+      <span>
+        ⑂ {at + 1}/{list.length}
+      </span>
+      <button className="ghost tiny" onClick={() => go(at + 1)} aria-label="next branch">›</button>
+    </div>
+  );
+}
+
+/** Checkpoints kept by hand after a message (or, `at` null, before any). */
+function Marks({ at }: { at: string | null }) {
+  useEmitter(app.uiEvents);
+  const marks = app.checkpoints.filter((k) => k.kind === 'manual' && k.at === at);
+  return (
+    <>
+      {marks.map((k) => (
+        <div key={k.id} className="checkpoint-mark">
+          <span className="cp-dot">◆</span>
+          <span className="cp-label">{k.label}</span>
+          <span className="dim">
+            {time(k.created)} · {k.modules} module{k.modules === 1 ? '' : 's'}
+          </span>
+          <button className="ghost tiny" title="bring this patch back (⌘Z undoes)" onClick={() => act(app.restoreCheckpoint(k.id))}>
+            ⟲ restore
+          </button>
+          <button className="ghost tiny" title="a new branch from here, with this patch" onClick={() => act(app.branchFromCheckpoint(k.id))}>
+            ⑂ branch
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** Editing one of your messages: what you send instead goes into a new branch from there. */
+function EditComposer({ id }: { id: string }) {
+  const aui = useAui();
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    const text = aui.composer.getState().text.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      aui.composer.cancel();
+      await app.editMessage(id, text);
+    } catch (e) {
+      app.showToast((e as Error).message, { error: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div
+      className="edit-composer"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          void send();
+        }
+      }}
+    >
+      <ComposerPrimitive.Input className="composer-input" submitMode="none" autoFocus rows={2} />
+      <div className="row end">
+        <ComposerPrimitive.Cancel className="ghost">cancel</ComposerPrimitive.Cancel>
+        <button disabled={busy} onClick={() => void send()} title="a new session from here: the conversation up to this message, the patch as it was then, and this instead">
+          ⑂ branch &amp; send
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function UserMessage() {
+  const { messages } = useContext(ChatInfo);
+  const id = useAuiState((s) => s.message.id);
+  const editing = useAuiState((s) => s.message.composer.isEditing);
+  const index = messages.findIndex((m) => m.id === id);
   return (
-    <MessagePrimitive.Root className="msg user">
-      <MessagePrimitive.Parts components={{ Text: ({ text }) => <>{text}</> }} />
+    <MessagePrimitive.Root className="msg-wrap user">
+      {editing ? (
+        <EditComposer id={id} />
+      ) : (
+        <div className="msg user">
+          <MessagePrimitive.Parts components={{ Text: ({ text }) => <>{text}</> }} />
+        </div>
+      )}
+      {!editing && index >= 0 && (
+        <div className="msg-foot">
+          <Branches index={index} />
+          <ActionBarPrimitive.Root className="msg-actions" hideWhenRunning autohide="always">
+            <ActionBarPrimitive.Edit className="ghost tiny" title="send something else here instead (in a new branch; this one stays)">
+              ✎ edit
+            </ActionBarPrimitive.Edit>
+            <button className="ghost tiny" title="send it again, from the patch as it was then (in a new branch; this one stays)" onClick={() => act(app.editMessage(id, textOf(messages[index])))}>
+              ↻ retry
+            </button>
+            <ActionBarPrimitive.Copy className="ghost tiny">copy</ActionBarPrimitive.Copy>
+          </ActionBarPrimitive.Root>
+        </div>
+      )}
+      <Marks at={id} />
     </MessagePrimitive.Root>
   );
 }
 
-function AssistantMessage() {
+function AssistantFooter({ id }: { id: string }) {
+  useEmitter(app.uiEvents);
+  const after = app.checkpoints.find((k) => k.kind === 'after' && k.at === id);
   return (
-    <MessagePrimitive.Root className="msg assistant">
-      <MessagePrimitive.Parts components={{ Text: TextPart, Reasoning: ReasoningPart, tools: { Fallback: ToolCard } }} />
+    <ActionBarPrimitive.Root className="msg-actions" hideWhenRunning autohide="not-last">
+      {after && (
+        <span className="cp-dot" title={`checkpoint: the patch as this turn left it (${after.modules} module${after.modules === 1 ? '' : 's'}, ${time(after.created)})`}>
+          ◆
+        </span>
+      )}
+      <button className="ghost tiny" title="a new session from here: this conversation so far, and the patch as this turn left it" onClick={() => act(app.branchAfter(id))}>
+        ⑂ branch from here
+      </button>
+      <button
+        className="ghost tiny"
+        disabled={!after}
+        title={after ? 'bring the patch back to how this turn left it (⌘Z undoes)' : 'no checkpoint here (from before they were kept)'}
+        onClick={() => after && act(app.restoreCheckpoint(after.id))}
+      >
+        ⟲ restore
+      </button>
+      <ActionBarPrimitive.Copy className="ghost tiny">copy</ActionBarPrimitive.Copy>
+    </ActionBarPrimitive.Root>
+  );
+}
+
+function AssistantMessage() {
+  const id = useAuiState((s) => s.message.id);
+  return (
+    <MessagePrimitive.Root className="msg-wrap assistant">
+      <div className="msg assistant">
+        <MessagePrimitive.Parts components={{ Text: TextPart, Reasoning: ReasoningPart, tools: { Fallback: ToolCard } }} />
+      </div>
+      <AssistantFooter id={id} />
+      <Marks at={id} />
     </MessagePrimitive.Root>
+  );
+}
+
+/** At the end of a branch nothing has been said in yet: where it came from, and the way back. */
+function BranchStart({ count }: { count: number }) {
+  useEmitter(app.uiEvents);
+  const me = app.entry;
+  if (!me?.parent || (me.forkKeep !== 'after' && me.forkKeep !== 'before') || count !== me.prefix || app.pendingSend?.session === app.session) return null;
+  const parent = app.tree.sessions.find((s) => s.name === me.parent);
+  return (
+    <div className="branch-start">
+      <span>
+        ⑂ A branch{parent ? ` of “${parent.title === UNTITLED ? 'untitled session' : parent.title}”` : ''}, from here, with the patch as it was. Say something to go another way.
+      </span>
+      <Branches index={count} />
+      {parent && (
+        <button className="ghost tiny" onClick={() => act(app.openSession(parent.name))}>
+          back to it
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Above the conversation: a new session, a fresh start with this patch, a branch, a checkpoint. */
+function ChatBar() {
+  useEmitter(app.uiEvents);
+  const song = app.song;
+  return (
+    <div className="chat-bar">
+      <button className="ghost" title={`a new session with an empty patch${song ? `, in “${song.name}”` : ''}`} onClick={() => act(app.newSession(app.entry?.songId ?? null))}>
+        ＋ new
+      </button>
+      <button className="ghost" title="clear the conversation: a fresh session with this patch (this one stays in the library)" onClick={() => act(app.freshStart())}>
+        ⌫ clear
+      </button>
+      <button className="ghost" title="branch: a copy of this session that goes its own way (this one stays as it is)" onClick={() => act(app.branch({ keep: 'all' }))}>
+        ⑂ branch
+      </button>
+      <button className="ghost" disabled={app.state !== 'ready'} title="keep the patch as it is now, by name (⌘S)" onClick={() => app.showDialog({ kind: 'checkpoint' })}>
+        ◆ checkpoint
+      </button>
+    </div>
   );
 }
 
@@ -236,19 +442,25 @@ function Composer() {
   );
 }
 
-function Thread() {
+function Thread({ count }: { count: number }) {
+  useEmitter(app.uiEvents);
+  const song = app.song;
   return (
     <ThreadPrimitive.Root className="chat">
+      <ChatBar />
       <ThreadPrimitive.Viewport className="chat-list">
+        <Marks at={null} />
         <ThreadPrimitive.Empty>
           <div className="chat-hello">
             <p>Describe the system you want to hear.</p>
             <p className="dim">Hold <kbd>space</kbd> (or the mic) to talk. Ask for knobs and macros by name. Change anything while it plays.</p>
+            {song && <p className="dim">This session is in “{song.name}”: the agent reads its AGENTS.md.</p>}
           </div>
         </ThreadPrimitive.Empty>
         <ThreadPrimitive.Messages>
           {({ message }) => (message.role === 'user' ? <UserMessage /> : <AssistantMessage />)}
         </ThreadPrimitive.Messages>
+        <BranchStart count={count} />
       </ThreadPrimitive.Viewport>
       <Composer />
     </ThreadPrimitive.Root>
@@ -262,19 +474,40 @@ export function AgentChat() {
   const [name] = useState(() => app.session);
   const agent = useAgent({ agent: 'PatterAgent', name });
   const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const ctx = { runtime: app.runtime, seq: app.seq, engine: app.engine, isStopped: () => app.stopped };
+  const ctx = {
+    runtime: app.runtime,
+    seq: app.seq,
+    engine: app.engine,
+    isStopped: () => app.stopped,
+    record: (source: string, bars: number, name?: string) => app.record(source, bars, name),
+    context: {
+      read: () => {
+        const c = app.agentContext();
+        return { song: c.song ?? '(none: this session stands on its own)', set: c.set ?? '(none)', person: c.agents || '(empty)' };
+      },
+      write: (level: 'song' | 'set' | 'person', text: string, mode: 'append' | 'replace') => app.writeContext(level, text, mode),
+    },
+  };
 
   const chat = useAgentChat({
     agent,
-    body: () => ({
-      patchState: JSON.stringify({
-        ...(summarizePatch(ctx) as object),
-        focus: { scope: app.scope || '(top level)', selected: app.selection },
-        ...(app.stopped ? { transport: 'stopped' } : {}),
-        ...(app.recentActions().length ? { userActions: app.recentActions() } : {}),
-      }),
-      settings: { effort: app.settings.effort },
-    }),
+    body: () => {
+      // The patch as it is goes with each message; the agent keeps it as the message's checkpoint.
+      return {
+        patchState: JSON.stringify({
+          ...(summarizePatch(ctx) as object),
+          focus: { scope: app.scope || '(top level)', selected: app.selection },
+          ...(app.stopped ? { transport: 'stopped' } : {}),
+          ...(app.recentActions().length ? { userActions: app.recentActions() } : {}),
+        }),
+        ...(app.state === 'ready' ? { patchDoc: JSON.stringify(app.runtime.doc) } : {}),
+        context: app.agentContext(),
+        settings: { effort: app.settings.effort },
+      };
+    },
+    onTurnEnd: (e) => {
+      if (e.outcome === 'error' && !e.replay) app.engine.info(`the agent's turn failed: ${e.error ?? 'unknown error'}`);
+    },
     onToolCall: async ({ toolCall, addToolOutput }) => {
       const id = toolCall.toolCallId;
       if (app.abandoned.has(id)) return; // its turn was stopped (maybe before a reload)
@@ -306,9 +539,9 @@ export function AgentChat() {
     },
   });
   const runtime = useAISDKRuntime(chat as unknown as Parameters<typeof useAISDKRuntime>[0]);
+  const messages = chat.messages as UIMessage[];
 
   useEffect(() => {
-    app.clearConversation = () => chat.clearHistory();
     app.chatStop = () => {
       void chat.stop();
     };
@@ -317,11 +550,61 @@ export function AgentChat() {
     };
   }, [chat]);
 
+  // The session's bookkeeping: how many messages the person has sent (the first names an untitled session), and the last one.
+  useEffect(() => {
+    if (name !== app.session) return;
+    const mine = messages.filter((m) => m.role === 'user');
+    app.lastMessageId = messages[messages.length - 1]?.id ?? null;
+    app.setTurns(mine.length, textOf(mine[0]));
+  }, [messages, name]);
+
+  // A turn that ran here and finished (no tool call still waiting): keep the patch as it left it.
+  const ran = useRef(false);
+  const status = chat.status;
+  useEffect(() => {
+    if (status === 'submitted' || status === 'streaming') {
+      ran.current = true;
+      return;
+    }
+    if (status !== 'ready' || !ran.current) return;
+    const last = messages[messages.length - 1];
+    if (last?.role !== 'assistant') return;
+    const waiting = last.parts.some((p) => {
+      const st = (p as { state?: string }).state;
+      return (p.type.startsWith('tool-') || p.type === 'dynamic-tool') && st !== 'output-available' && st !== 'output-error';
+    });
+    if (waiting) return;
+    const t = setTimeout(() => {
+      ran.current = false;
+      void queue.current.then(() => app.afterTurn(last.id));
+    }, 600);
+    return () => clearTimeout(t);
+  }, [status, messages]);
+
+  // An edit or a retry made this branch: send its message once the connection has settled — the agent
+  // knows it, its conversation is here, nothing is streaming or being resumed. A send while the chat is
+  // still connecting can lose its turn (or its tool calls), so it waits a moment and looks again.
+  const settled = agent.identified && status === 'ready' && !chat.isServerStreaming && !chat.isRecovering;
+  const settledRef = useRef(settled);
+  settledRef.current = settled && messages.length >= (app.pendingSend?.prefix ?? 0);
+  useEffect(() => {
+    const p = app.pendingSend;
+    if (!p || p.session !== name || !settled || messages.length < p.prefix) return;
+    const t = setTimeout(() => {
+      if (app.pendingSend !== p || !settledRef.current) return;
+      app.pendingSend = null;
+      void chat.sendMessage({ text: p.text });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [messages.length, settled, name, chat]);
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      {chat.connectionError && <div className="msg note error">agent connection: {String(chat.connectionError.message ?? chat.connectionError)}</div>}
-      {chat.error && <div className="msg note error">{chat.error.message}</div>}
-      <Thread />
+      <ChatInfo.Provider value={{ messages }}>
+        {chat.connectionError && <div className="msg note error">agent connection: {String(chat.connectionError.message ?? chat.connectionError)}</div>}
+        {chat.error && <div className="msg note error">{chat.error.message}</div>}
+        <Thread count={messages.length} />
+      </ChatInfo.Provider>
     </AssistantRuntimeProvider>
   );
 }

@@ -83,6 +83,8 @@ export class Sequencer {
     if (!(bpm >= 10 && bpm <= 999)) throw new Error('bpm must be between 10 and 999');
     this.engine.sonic.clock?.setBpm(bpm);
     this.runtime.doc.bpm = bpm;
+    // A new tempo re-anchors the beat; measure the engine's clock again.
+    if (this.engine.booted) setTimeout(() => void this.engine.calibrateClock(), 50);
     this.changed();
   }
 

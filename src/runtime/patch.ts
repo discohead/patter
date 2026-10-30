@@ -15,9 +15,12 @@ export interface ModuleDoc {
   params: Record<string, number>;
   /** Monitored to the master mix (audio and voice modules). */
   play: boolean;
+  /** The mixer: its fader (linear gain into the master), pan, mute and solo — the person's final mix. */
   level: number;
   pan: number;
   mute: boolean;
+  /** Soloed: while any module is, only soloed ones are heard. */
+  solo?: boolean;
   /** Crossfade time when the code is replaced. */
   fadeTime: number;
   description?: string;
@@ -44,6 +47,27 @@ export interface SubpatchDoc {
   controls: Record<string, string>;
   /** The abstraction this subpatch is an instance of. */
   abstraction?: string;
+  /**
+   * Sample slots: sample('hit') inside means the sample named here, in the
+   * parent's scope — so each instance of an abstraction can play its own.
+   */
+  samples?: Record<string, string>;
+}
+
+/** An audio file in the patch, under a name modules use with sample('name'). */
+export interface SampleDoc {
+  /** Where the audio is: 'stock:loop_amen' (Sonic Pi's pack) or 'lib:<sha256>' (your library). */
+  src: string;
+  /** The file it came from, for people. */
+  file?: string;
+  channels: number;
+  frames: number;
+  duration: number;
+  /** How many beats it spans, for loops: QLoop plays it in time at any tempo. */
+  beats?: number;
+  /** The MIDI note it sounds at, for pitched samples (OneShot's note follows it). */
+  root?: number;
+  description?: string;
 }
 
 export interface AbstractionDoc {
@@ -100,6 +124,8 @@ export interface PatchDoc {
   modules: Record<string, ModuleDoc>;
   /** Every subpatch, by full path. */
   subpatches: Record<string, SubpatchDoc>;
+  /** Audio files, by the name modules use. */
+  samples: Record<string, SampleDoc>;
   /** Reusable subpatch definitions. */
   abstractions: Record<string, AbstractionDoc>;
   /** Routes, with full-path refs. */
@@ -120,6 +146,7 @@ export function emptyPatch(): PatchDoc {
     bpm: 110,
     modules: {},
     subpatches: {},
+    samples: {},
     abstractions: {},
     mods: [],
     macros: {},
@@ -134,6 +161,7 @@ export function migratePatch(raw: unknown): PatchDoc {
   const d = { ...emptyPatch(), ...(raw as Partial<PatchDoc>) } as PatchDoc;
   d.version = 2;
   d.subpatches ??= {};
+  d.samples ??= {};
   d.abstractions ??= {};
   return d;
 }

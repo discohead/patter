@@ -12,6 +12,8 @@ import { ModuleCompileError } from '../runtime/module-def';
 import { moduleNetlist, nodeOrder, patchMermaid } from '../runtime/graph';
 import { join, leafOf, parentOf, within } from '../runtime/patch';
 import { childrenOf, outletsOf, resolveSource } from '../runtime/resolve';
+import { library, stockSamples } from '../app/library';
+import { noteName } from '../engine/analysis';
 
 export interface ToolContext {
   runtime: Runtime;
@@ -19,6 +21,13 @@ export interface ToolContext {
   engine: Engine;
   /** True while the user has the sound stopped (⌘.). */
   isStopped?: () => boolean;
+  /** Record bars of a source into a new sample; resolves with its name. */
+  record?: (source: string, bars: number, name?: string) => Promise<string>;
+  /** The AGENTS.md files the session reads, and a way to write them. */
+  context?: {
+    read(): unknown;
+    write(level: 'song' | 'set' | 'person', text: string, mode: 'append' | 'replace'): Promise<void>;
+  };
 }
 
 class InputError extends Error {}
@@ -220,9 +229,9 @@ async function execute(name: string, input: Obj, ctx: ToolContext): Promise<unkn
         return { master: rt.doc.master };
       }
       const target = rt.moduleFor(module);
-      rt.setMonitor(target, { play: bool(input, 'play'), level: num(input, 'level', true), pan: num(input, 'pan', true), mute: bool(input, 'mute') });
+      rt.setMonitor(target, { play: bool(input, 'play'), level: num(input, 'level', true), pan: num(input, 'pan', true), mute: bool(input, 'mute'), solo: bool(input, 'solo') });
       const d = rt.doc.modules[target];
-      return { module: target, play: d.play, level: d.level, pan: d.pan, mute: d.mute };
+      return { module: target, play: d.play, level: d.level, pan: d.pan, mute: d.mute, solo: Boolean(d.solo), ...(rt.silenced(target) && !d.mute ? { silent: 'another module is soloed' } : {}) };
     }
     case 'expose_controls': {
       const items = arr(input, 'items')!.map((i) => {
@@ -292,6 +301,7 @@ async function execute(name: string, input: Obj, ctx: ToolContext): Promise<unkn
           inlets: parsed,
           outlets: strOrNullRecord(input, 'outlets'),
           controls: strOrNullRecord(input, 'controls'),
+          samples: strOrNullRecord(input, 'samples'),
         });
         return { ...describeSubpatch(rt, path), ...(r.warnings.length ? { warnings: r.warnings } : {}) };
       }
@@ -307,7 +317,13 @@ async function execute(name: string, input: Obj, ctx: ToolContext): Promise<unkn
         return { saved: name, modules: Object.keys(abs.modules), instances: rt.instancesOf(name) };
       }
       if (action === 'instantiate') {
-        return await rt.instantiate(str(input, 'name')!, str(input, 'path')!, { inlets: strOrNullRecord(input, 'inlets'), params: numRecord(input, 'params') });
+        const samples = strOrNullRecord(input, 'samples');
+        if (samples && Object.values(samples).some((v) => v === null)) throw new InputError('samples: each slot names a sample');
+        return await rt.instantiate(str(input, 'name')!, str(input, 'path')!, {
+          inlets: strOrNullRecord(input, 'inlets'),
+          samples: samples as Record<string, string> | undefined,
+          params: numRecord(input, 'params'),
+        });
       }
       if (action === 'detach') {
         const path = str(input, 'path')!;
@@ -315,6 +331,39 @@ async function execute(name: string, input: Obj, ctx: ToolContext): Promise<unkn
         return { detached: path };
       }
       throw new InputError("action must be 'save', 'instantiate', 'detach' or 'list'");
+    }
+    case 'samples': {
+      const action = str(input, 'action')!;
+      if (action === 'browse') return await browseSamples(str(input, 'where', true) ?? 'stock', str(input, 'query', true));
+      if (action === 'list') return Object.keys(rt.doc.samples).map((n) => describeSample(rt, n, false));
+      if (action === 'record') {
+        if (!ctx.record) throw new InputError('recording needs the app');
+        const made = await ctx.record(str(input, 'source')!, num(input, 'bars')!, str(input, 'name', true));
+        return describeSample(rt, made, false);
+      }
+      const name = str(input, 'name')!;
+      if (action === 'analyze') return describeSample(rt, name, true);
+      if (action === 'remove') {
+        rt.checkpoint();
+        await rt.removeSample(name);
+        return { removed: name };
+      }
+      if (action === 'add' || action === 'set') {
+        const from = str(input, 'from', true);
+        if (action === 'add' && !from) throw new InputError('add needs from: where the audio is (a stock name like "loop_amen", or a library file)');
+        if (action === 'set' && !rt.doc.samples[name]) throw new InputError(`no sample '${name}' in the patch (add it first)`);
+        const source = from ? await sourceFor(from) : undefined;
+        rt.checkpoint();
+        const r = await rt.defineSample(name, {
+          src: source?.src,
+          file: source?.file,
+          beats: num(input, 'beats', true),
+          root: num(input, 'root', true),
+          description: str(input, 'description', true),
+        });
+        return { ...describeSample(rt, name, false), ...(r.warnings.length ? { warnings: r.warnings } : {}) };
+      }
+      throw new InputError("action must be 'browse', 'list', 'add', 'set', 'analyze' or 'remove'");
     }
     case 'ugen_reference': {
       const names = (arr(input, 'names')!).map(String).slice(0, 12);
@@ -327,6 +376,16 @@ async function execute(name: string, input: Obj, ctx: ToolContext): Promise<unkn
       seq.clear();
       await rt.clear();
       return { cleared: true };
+    }
+    case 'context': {
+      if (!ctx.context) throw new InputError('context files need the app');
+      const action = str(input, 'action')!;
+      if (action === 'read') return ctx.context.read();
+      if (action !== 'append' && action !== 'replace') throw new InputError("action must be 'read', 'append' or 'replace'");
+      const level = (str(input, 'level', true) ?? 'song') as 'song' | 'set' | 'person';
+      if (!['song', 'set', 'person'].includes(level)) throw new InputError("level must be 'song', 'set' or 'person'");
+      await ctx.context.write(level, str(input, 'text')!, action);
+      return ctx.context.read();
     }
     case 'annotate': {
       const title = str(input, 'title', true);
@@ -359,6 +418,73 @@ function parseInlet(name: string, v: unknown) {
     rate: rate as 'audio' | 'control' | undefined,
     channels: o.channels as number | undefined,
     description: typeof o.description === 'string' ? o.description : undefined,
+  };
+}
+
+const round = (x: number, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
+
+/** 'loop_amen', 'stock:loop_amen', a library file's name or 'lib:<sha256>' → a source. */
+async function sourceFor(from: string): Promise<{ src: string; file: string }> {
+  if (/^stock:[\w-]+$/.test(from)) return { src: from, file: `${from.slice(6)}.flac` };
+  if (/^lib:[0-9a-f]{64}$/.test(from)) {
+    const lib = await library.samples().catch(() => []);
+    return { src: from, file: lib.find((x) => x.hash === from.slice(4))?.name ?? 'library sample' };
+  }
+  const bare = from.replace(/\.(flac|wav|aiff?|mp3|ogg|m4a)$/i, '');
+  const stock = await stockSamples();
+  if (stock.some((x) => x.name === bare)) return { src: `stock:${bare}`, file: `${bare}.flac` };
+  const lib = await library.samples().catch(() => []);
+  const hit = lib.find((x) => x.name === from || x.name.replace(/\.[^.]+$/, '') === bare);
+  if (hit) return { src: `lib:${hit.hash}`, file: hit.name };
+  const near = [...stock.map((x) => x.name), ...lib.map((x) => x.name)].filter((n) => n.includes(bare.slice(0, 4))).slice(0, 8);
+  throw new InputError(`no sample called '${from}' in the stock pack or the library${near.length ? ` (similar: ${near.join(', ')})` : ''}`);
+}
+
+async function browseSamples(where: string, query?: string) {
+  const q = query?.toLowerCase();
+  if (where === 'library') {
+    const lib = await library.samples();
+    const list = lib.filter((x) => !q || x.name.toLowerCase().includes(q));
+    return lib.length
+      ? { library: list.map((x) => ({ name: x.name, from: `lib:${x.hash}`, duration: round(x.duration), channels: x.channels })) }
+      : { library: [], note: 'nothing uploaded yet: the user drags audio files onto the page' };
+  }
+  const stock = await stockSamples();
+  if (q) return { stock: stock.filter((x) => x.name.includes(q) || x.category === q).map((x) => x.name) };
+  const byCategory: Record<string, string[]> = {};
+  for (const x of stock) (byCategory[x.category] ??= []).push(x.name);
+  return {
+    stock: Object.fromEntries(Object.entries(byCategory).map(([c, names]) => [c, names.length > 10 ? [...names.slice(0, 10), `…and ${names.length - 10} more`] : names])),
+  };
+}
+
+/** A patch sample: what it is, what plays it, and (full) what the analysis heard. */
+function describeSample(rt: Runtime, name: string, full: boolean) {
+  const doc = rt.doc.samples[name];
+  if (!doc) throw new InputError(`no sample '${name}' (samples: ${Object.keys(rt.doc.samples).join(', ') || 'none'})`);
+  const a = rt.bank?.get(doc.src)?.analysis;
+  const base = {
+    name,
+    file: doc.file,
+    from: doc.src,
+    duration: doc.duration,
+    channels: doc.channels,
+    beats: doc.beats ?? null,
+    root: doc.root ?? null,
+    playedBy: rt.sampleUsers(name),
+  };
+  if (!a) return base;
+  const beatLen = doc.beats ? doc.duration / doc.beats : null;
+  return {
+    ...base,
+    analysis: {
+      kind: a.kind,
+      peakDb: a.peakDb,
+      rmsDb: a.rmsDb,
+      tempo: a.beatsCandidates.length ? a.beatsCandidates.map((n) => `${n} beats = ${round((n * 60) / doc.duration, 1)} bpm`) : 'no clear pulse',
+      pitch: a.pitchHz ? { hz: a.pitchHz, note: noteName(a.pitchHz), midi: a.root, confidence: a.pitchConfidence } : 'no clear pitch',
+      onsets: full ? { [beatLen ? 'beats' : 'seconds']: a.onsets.slice(0, 48).map((t) => round(beatLen ? t / beatLen : t)), count: a.onsets.length } : a.onsets.length,
+    },
   };
 }
 
@@ -434,8 +560,9 @@ export function summarizePatch(ctx: ToolContext, full = false): unknown {
         if (!src) return `${r.ref}→(unconnected)`;
         return join(parentOf(name), r.ref.split('.')[0]) === src ? r.ref : `${r.ref}→${src}`;
       }),
+      ...(live?.compiled.samples.length ? { samples: live.compiled.samples.map((x) => (live.samples[x.control] === x.ref ? x.ref : `${x.ref}→${live.samples[x.control]}`)) } : {}),
       params: Object.fromEntries((live?.compiled.params ?? []).map((p) => [p.name, Math.round(rt.paramValue(name, p.name) * 1000) / 1000])),
-      ...(d.kind !== 'control' ? { play: d.play, level: d.level } : {}),
+      ...(d.kind !== 'control' ? { play: d.play, level: Math.round(d.level * 1000) / 1000, ...(d.pan ? { pan: d.pan } : {}), ...(d.mute ? { mute: true } : {}), ...(d.solo ? { solo: true } : {}) } : {}),
       ...(d.description ? { desc: d.description } : {}),
       ...(full ? { code: d.code } : {}),
     };
@@ -447,13 +574,22 @@ export function summarizePatch(ctx: ToolContext, full = false): unknown {
     ...(Object.keys(sp.inlets).length ? { inlets: Object.fromEntries(Object.entries(sp.inlets).map(([k, v]) => [k, v.from])) } : {}),
     outlets: outletsOf(doc, path).outlets,
     ...(Object.keys(sp.controls).length ? { controls: sp.controls } : {}),
+    ...(sp.samples && Object.keys(sp.samples).length ? { samples: sp.samples } : {}),
   }));
   const abstractions = Object.entries(doc.abstractions).map(([name, a]) => `${name}${a.description ? ` (${a.description})` : ''}: ${rt.instancesOf(name).join(', ') || 'no instances'}`);
   return {
     title: doc.title,
     bpm: Math.round(seq.bpm * 100) / 100,
+    master: Math.round(doc.master.level * 1000) / 1000,
     modules,
     ...(subpatches.length ? { subpatches } : {}),
+    ...(Object.keys(doc.samples).length
+      ? {
+          samples: Object.fromEntries(
+            Object.entries(doc.samples).map(([n, x]) => [n, { file: x.file, seconds: round(x.duration), channels: x.channels, ...(x.beats ? { beats: x.beats } : {}), ...(x.root !== undefined ? { root: x.root } : {}) }]),
+          ),
+        }
+      : {}),
     ...(abstractions.length ? { abstractions } : {}),
     mods: doc.mods.map((m) => `${m.source} → ${m.target} × ${m.amount}`),
     macros: Object.fromEntries(Object.entries(doc.macros).map(([k, v]) => [k, { value: Math.round(v.value * 1000) / 1000, label: v.label }])),

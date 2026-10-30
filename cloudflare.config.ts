@@ -22,6 +22,8 @@ export default defineConfig(({ mode }) => ({
       AI: bindings.ai({ dev: { remote: true } }),
       PatterAgent: bindings.durableObject({ worker: 'patter', exportName: 'PatterAgent' }),
       PatchLibrary: bindings.durableObject({ worker: 'patter', exportName: 'PatchLibrary' }),
+      // Audio files people bring into patches, by content hash (local dev uses a simulated bucket).
+      SAMPLES: bindings.r2({ name: 'patter-samples' }),
       AI_GATEWAY: bindings.text('patter'),
       ACCESS_TEAM: bindings.text('dry-hat-4b71.cloudflareaccess.com'),
       ACCESS_AUD: bindings.text(ACCESS_AUD),

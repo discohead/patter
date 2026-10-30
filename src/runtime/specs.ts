@@ -7,6 +7,8 @@ export interface ControlSpec {
   max: number;
   warp: Warp;
   step?: number;
+  /** 'pow2': the knob moves through powers of two (QLoop's lengths). */
+  quantize?: 'pow2';
   default?: number;
   unit?: string;
 }
@@ -41,7 +43,7 @@ export const SPEC_PRESETS: Record<string, ControlSpec> = {
   bpm: { min: 20, max: 300, warp: 'lin', unit: 'BPM' },
 };
 
-export type SpecInput = string | ControlSpec | [number, number, Warp?, number?] | Partial<ControlSpec> | undefined;
+export type SpecInput = string | ControlSpec | [number, number, Warp?, (number | 'pow2')?] | Partial<ControlSpec> | undefined;
 
 /** Accepts a preset name, a [min, max, warp, step] tuple, or a spec object. */
 export function toSpec(s: SpecInput, dflt: number): ControlSpec {
@@ -58,7 +60,9 @@ export function toSpec(s: SpecInput, dflt: number): ControlSpec {
     return { ...p };
   }
   if (Array.isArray(s)) {
-    return { min: s[0], max: s[1], warp: s[2] ?? 'lin', step: s[3] };
+    const [min, max, warp, step] = s as unknown[];
+    if (step === 'pow2') return { min: min as number, max: max as number, warp: (warp as Warp) ?? 'exp', quantize: 'pow2' };
+    return { min: min as number, max: max as number, warp: (warp as Warp) ?? 'lin', step: step as number | undefined };
   }
   const base = s.warp === undefined && s.min !== undefined && s.max !== undefined && s.min > 0 && s.max / s.min >= 100
     ? 'exp' : 'lin';
@@ -67,6 +71,7 @@ export function toSpec(s: SpecInput, dflt: number): ControlSpec {
     max: s.max ?? 1,
     warp: s.warp ?? base,
     step: s.step,
+    ...(s.quantize === 'pow2' ? { quantize: 'pow2' as const } : {}),
     unit: s.unit,
   };
 }
@@ -126,6 +131,7 @@ export function map(spec: ControlSpec, pos: number): number {
     }
   }
   if (spec.step) v = Math.round(v / spec.step) * spec.step;
+  if (spec.quantize === 'pow2' && v > 0) v = 2 ** Math.round(Math.log2(v));
   return v;
 }
 
@@ -141,7 +147,10 @@ export function formatValue(spec: ControlSpec, v: number): string {
   if (!Number.isFinite(v)) return v < 0 ? '-inf' : 'inf';
   const abs = Math.abs(v);
   let s: string;
-  if (spec.step && spec.step >= 1) s = String(Math.round(v));
+  const fraction: Record<number, string> = { 0.0625: '1/16', 0.125: '⅛', 0.25: '¼', 0.5: '½' };
+  if (spec.quantize === 'pow2' && fraction[v]) s = fraction[v];
+  else if (spec.quantize === 'pow2') s = String(Math.round(v));
+  else if (spec.step && spec.step >= 1) s = String(Math.round(v));
   else if (abs >= 1000) s = `${(v / 1000).toFixed(abs >= 10000 ? 1 : 2)}k`;
   else if (abs >= 100) s = v.toFixed(0);
   else if (abs >= 10) s = v.toFixed(1);

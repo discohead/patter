@@ -1,9 +1,11 @@
-// The knob area, in two tabs. "Performance" is the panel of the level you're
+// The knob area, in tabs. "Performance" is the panel of the level you're
 // looking at: the top level's exposed controls, or a subpatch's face (its
 // controls) — or, until any are chosen, everything at that level. "Selected"
 // is whatever is selected in the graph: a module's knobs and the routes into
 // them, a subpatch's face and insides, a macro and its targets. The ☆ on a
 // knob puts it on (or takes it off) the Performance Panel of the level you're in.
+// Then the Mixer (every module's level into the master), the Samples and the
+// Recordings (takes of the mix).
 
 import { useState } from 'react';
 import { app, useEmitter } from '../app/store';
@@ -11,6 +13,10 @@ import type { ModuleKind } from '../runtime/module-def';
 import { leafOf, parentOf, relativeTo, within } from '../runtime/patch';
 import { childrenOf } from '../runtime/resolve';
 import { Knob } from './Knob';
+import { mixChannels } from '../app/mix';
+import { MixerPanel } from './Mixer';
+import { LoopView, SamplesPanel } from './Samples';
+import { RecordingsPanel } from './Takes';
 
 const KIND_ACCENT: Record<ModuleKind, string> = {
   audio: 'var(--audio)',
@@ -263,8 +269,10 @@ function SelectedSection({ id, scope }: { id: string; scope: string }) {
   if (doc.modules[id]) {
     const items = moduleItems(id, leafOf(id));
     const routes = doc.mods.filter((r) => r.target.startsWith(`${id}.`));
+    const plays = (rt.module(id)?.compiled.samples.length ?? 0) > 0;
     return (
       <>
+        {plays && <LoopView module={id} />}
         {items.length ? <Groups items={items} scope={scope} /> : <p className="dim pad">{leafOf(id)} has no knobs.</p>}
         <Routes routes={routes} labelFor={(r) => `${shortRef(r.source)}→${r.target.slice(r.target.lastIndexOf('.') + 1)}`} />
       </>
@@ -294,12 +302,21 @@ export function Panels() {
   useEmitter(app.uiEvents);
   const scope = app.scope;
   const sel = app.selection.filter((id) => !id.includes(':') || id.startsWith('macro:'));
-  const tab = app.panel === 'selected' && sel.length ? 'selected' : 'performance';
+  const tab = app.panel === 'selected' ? (sel.length ? 'selected' : 'performance') : app.panel;
+  const sampleCount = Object.keys(app.runtime.doc.samples).length;
+  const stripCount = mixChannels(app.runtime).length;
+  const takeCount = app.recorder.takes.length;
   const where = scope ? leafOf(scope) : 'patch';
   const selLabel = sel.length === 1 ? leafOf(sel[0].replace(/^macro:/, '')) : `${sel.length}`;
   const perf = tab === 'performance' ? performance(scope) : null;
   const hint =
-    tab === 'selected'
+    tab === 'samples'
+      ? 'drop audio files anywhere on the page to add them'
+      : tab === 'mixer'
+      ? 'your final mix: the agent leaves it to you'
+      : tab === 'recordings'
+      ? '● REC ⌥R from the next bar · ⟲ ⌥C the last minutes'
+      : tab === 'selected'
       ? '☆ puts a knob on this level’s Performance Panel'
       : perf!.curated
         ? scope
@@ -316,9 +333,24 @@ export function Panels() {
         <button className={`tab${tab === 'selected' ? ' on' : ''}`} disabled={!sel.length} onClick={() => app.showPanel('selected')}>
           Selected{sel.length ? <span className="dim"> · {selLabel}</span> : null}
         </button>
+        <button className={`tab${tab === 'mixer' ? ' on' : ''}`} onClick={() => app.showPanel('mixer')}>
+          Mixer{stripCount ? <span className="dim"> · {stripCount}</span> : null}
+        </button>
+        <button className={`tab${tab === 'samples' ? ' on' : ''}`} onClick={() => app.showPanel('samples')}>
+          Samples{sampleCount ? <span className="dim"> · {sampleCount}</span> : null}
+        </button>
+        <button className={`tab${tab === 'recordings' ? ' on' : ''}`} onClick={() => app.showPanel('recordings')}>
+          Recordings{takeCount ? <span className="dim"> · {takeCount}</span> : null}
+        </button>
         <span className="panel-hint dim">{hint}</span>
       </div>
-      {tab === 'performance' ? (
+      {tab === 'samples' ? (
+        <SamplesPanel />
+      ) : tab === 'mixer' ? (
+        <MixerPanel />
+      ) : tab === 'recordings' ? (
+        <RecordingsPanel />
+      ) : tab === 'performance' ? (
         perf!.items.length ? (
           <div className="surface">
             <Groups items={perf!.items} scope={scope} />

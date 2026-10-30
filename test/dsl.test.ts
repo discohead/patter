@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { $bin, $call, transform } from '../src/sc/dsl';
-import { map, unmap, toSpec } from '../src/runtime/specs';
+import { formatValue, map, unmap, toSpec } from '../src/runtime/specs';
 import { euclid, degree, quantize } from '../src/seq/helpers';
 
 const T = (src: string) => transform(src, { operators: true, loopGuard: true, autoReturn: true });
@@ -53,6 +53,16 @@ describe('runtime helpers', () => {
     expect($call([60, 72], 'midicps', [])).toEqual([expect.closeTo(261.6256, 3), expect.closeTo(523.2511, 3)]);
     expect($call([1, 2, 3], 'sum', [])).toBe(6);
     expect($call('abc', 'toUpperCase', [])).toBe('ABC');
+  });
+});
+
+describe('power-of-two knobs', () => {
+  it('move through powers of two and read like it', () => {
+    const spec = toSpec([0.25, 16, 'exp', 'pow2'], 4);
+    expect(spec).toMatchObject({ min: 0.25, max: 16, warp: 'exp', quantize: 'pow2' });
+    expect([0, 0.2, 0.5, 0.8, 1].map((p) => map(spec, p))).toEqual([0.25, 0.5, 2, 8, 16]);
+    expect(formatValue(spec, 0.25)).toBe('¼');
+    expect(formatValue(spec, 4)).toBe('4');
   });
 });
 

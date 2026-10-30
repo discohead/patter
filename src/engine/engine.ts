@@ -3,6 +3,7 @@
 
 import { SuperSonic, type OscBundlePacket, type OscMessage } from 'supersonic-scsynth';
 import { systemDefs } from './system-defs';
+import { CLOCK_BUS, CLOCK_PERIOD } from '../sc/samplers';
 
 export { GROUPS } from './groups';
 import { GROUPS } from './groups';
@@ -16,6 +17,17 @@ export interface EngineLogEntry {
 export interface Meter {
   peak: number[];
   rms: number[];
+  time: number;
+}
+
+/** Where a looping sampler is, as it reports itself (in beats of its sample). */
+export interface Playhead {
+  pos: number;
+  start: number;
+  length: number;
+  beats: number;
+  reverse: number;
+  rate: number;
   time: number;
 }
 
@@ -58,6 +70,8 @@ export class Engine {
   private logListeners = new Set<(e: EngineLogEntry) => void>();
   readonly meters = new Map<number, Meter>();
   masterMeter: Meter = { peak: [0, 0], rms: [0, 0], time: 0 };
+  /** Looping samplers' playheads, by the module's meter id. */
+  readonly playheads = new Map<number, Playhead>();
   private audioBuses = new BusAllocator(64, 1024);
   private controlBuses = new BusAllocator(64, 16384);
   /** A control bus nothing writes: modulation slots point here when empty. */
@@ -65,6 +79,16 @@ export class Engine {
   masterBus = -1;
   masterNode = -1;
   private loadQueue: Promise<unknown> = Promise.resolve();
+  /** /b_getn replies awaited, by 'bufnum:start'. */
+  private bufferReads = new Map<string, (values: number[]) => void>();
+  /** Nodes whose end someone is waiting for. */
+  private nodeEnds = new Map<number, () => void>();
+  /** Clock probes in flight, by node id. */
+  private probes = new Map<number, (enginePhase: number) => void>();
+  private calibrating: Promise<number | null> | null = null;
+  private calibrationTimer: ReturnType<typeof setInterval> | null = null;
+  /** The engine's beat minus the client's, in beats modulo CLOCK_PERIOD (what CLOCK_BUS holds). */
+  clockOffset = 0;
   private meterIds = 1;
   booted = false;
 
@@ -73,7 +97,7 @@ export class Engine {
       workerBaseURL: '/supersonic/workers/',
       coreBaseURL: '/supersonic-core/',
       synthdefBaseURL: '/synthdefs/',
-      sampleBaseURL: 'https://unpkg.com/supersonic-scsynth-samples@0.91.0/samples/',
+      sampleBaseURL: '/samples/',
       scsynthOptions: {
         maxNodes: 1024, // the node-tree mirror's size; more would be invisible to getTree()
         maxWireBufs: 512,
@@ -125,6 +149,16 @@ export class Engine {
         rms: vals.filter((_, i) => i % 2 === 1),
         time: performance.now(),
       };
+    } else if (addr === '/b_setn') {
+      this.bufferReads.get(`${args[0]}:${args[1]}`)?.(args.slice(3) as number[]);
+    } else if (addr === '/n_end') {
+      this.nodeEnds.get(args[0] as number)?.();
+    } else if (addr === '/patter/clock') {
+      this.probes.get(args[0] as number)?.(args[2] as number);
+    } else if (addr === '/patter/playhead') {
+      // [nodeID, replyID, pos, start, length, beats, reverse, rate]
+      const [pos, start, length, beats, reverse, rate] = args.slice(2) as number[];
+      this.playheads.set(args[1] as number, { pos, start, length, beats, reverse, rate, time: performance.now() });
     } else if (addr === '/fail') {
       this.push('fail', args.map(String).join(' '));
     }
@@ -147,8 +181,109 @@ export class Engine {
     this.masterNode = this.sonic.nextNodeId();
     send('/s_new', 'patter_master', this.masterNode, 0, GROUPS.master, 'inBus', this.masterBus);
     this.booted = true;
+    void this.calibrateClock();
+    this.calibrationTimer = setInterval(() => void this.calibrateClock(), 15_000);
     const info = this.sonic.getInfo();
     this.info(`engine up: ${info.sampleRate} Hz, ${this.sonic.mode} mode, boot ${Math.round(info.bootTimeMs ?? 0)} ms`);
+  }
+
+  /** Resolves when a node ends (frees itself, or is freed), or rejects after `ms`. */
+  nodeEnded(id: number, ms: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.nodeEnds.delete(id);
+        reject(new Error('timed out'));
+      }, ms);
+      this.nodeEnds.set(id, () => {
+        clearTimeout(timer);
+        this.nodeEnds.delete(id);
+        resolve();
+      });
+    });
+  }
+
+  /** A buffer's samples (interleaved), read back over OSC in chunks. */
+  async readBuffer(bufnum: number, frames: number, channels: number): Promise<Float32Array> {
+    const total = frames * channels;
+    const out = new Float32Array(total);
+    const chunk = 1600;
+    const starts: number[] = [];
+    for (let at = 0; at < total; at += chunk) starts.push(at);
+    const one = (start: number) =>
+      new Promise<void>((resolve, reject) => {
+        const key = `${bufnum}:${start}`;
+        const timer = setTimeout(() => {
+          this.bufferReads.delete(key);
+          reject(new Error(`no reply reading buffer ${bufnum} at ${start}`));
+        }, 4000);
+        this.bufferReads.set(key, (values) => {
+          clearTimeout(timer);
+          this.bufferReads.delete(key);
+          out.set(values, start);
+          resolve();
+        });
+        this.send('/b_getn', bufnum, start, Math.min(chunk, total - start));
+      });
+    // A few in flight at a time.
+    let next = 0;
+    const worker = async () => {
+      while (next < starts.length) await one(starts[next++]);
+    };
+    await Promise.all(Array.from({ length: 12 }, worker));
+    return out;
+  }
+
+  /**
+   * Measure how far the engine's beat (LinkPhase) is from the beat grid the
+   * client schedules on, and put it on CLOCK_BUS for every clock-locked synth
+   * to subtract. Bundles land exactly when stamped, so a probe started at a
+   * known client time T reports the engine's beat there — at the start of the
+   * block holding T, half a block early on average, which four probes at
+   * scattered sub-block positions even out. SuperSonic 0.91 can show a
+   * constant offset here; with none this measures zero.
+   */
+  calibrateClock(): Promise<number | null> {
+    if (this.calibrating) return this.calibrating;
+    const run = async (): Promise<number | null> => {
+      const clock = this.sonic.clock;
+      if (!clock || !this.booted) return null;
+      const bps = clock.getBpm() / 60;
+      const halfBlock = (0.5 * 128) / this.sampleRate;
+      const start = clock.now() + 0.15;
+      const results = await Promise.all(
+        [0, 0.0371, 0.0743, 0.1117].map((dt) => {
+          const t = start + dt;
+          const id = this.nextNodeId();
+          const reply = new Promise<number | null>((resolve) => {
+            const timer = setTimeout(() => {
+              this.probes.delete(id);
+              resolve(null);
+            }, 2000);
+            this.probes.set(id, (phase) => {
+              clearTimeout(timer);
+              this.probes.delete(id);
+              resolve(phase);
+            });
+          });
+          // At the head of the root, outside the transport's group: it runs while stopped too.
+          this.bundle(t, [['/s_new', 'patter_clockprobe', id, 0, 0]]);
+          return reply.then((phase) => (phase === null ? null : phase + halfBlock * bps - clock.beatAtTime(t, 4)));
+        }),
+      );
+      const got = results.filter((x): x is number => x !== null);
+      if (!got.length) return null;
+      // A mean on the circle of CLOCK_PERIOD beats, around the first.
+      const wrap = (x: number) => ((x % CLOCK_PERIOD) + CLOCK_PERIOD) % CLOCK_PERIOD;
+      const ref = wrap(got[0]);
+      const mean = ref + got.reduce((sum, x) => sum + ((((wrap(x) - ref) % CLOCK_PERIOD) + 1.5 * CLOCK_PERIOD) % CLOCK_PERIOD - CLOCK_PERIOD / 2), 0) / got.length;
+      this.clockOffset = wrap(mean);
+      this.send('/c_set', CLOCK_BUS, this.clockOffset);
+      return this.clockOffset;
+    };
+    this.calibrating = run().finally(() => {
+      this.calibrating = null;
+    });
+    return this.calibrating;
   }
 
   private pauseTimer: ReturnType<typeof setTimeout> | null = null;

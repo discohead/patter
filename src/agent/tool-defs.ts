@@ -72,6 +72,11 @@ export const TOOL_DEFS: ToolDef[] = [
           description: 'configure: control name → inner param ref ("filter.cutoff") or inner macro ("macro:bright"), or null to remove. Controls are the subpatch\'s face: its own Performance Panel, and what "voice.<control>" means from outside.',
           additionalProperties: true,
         },
+        samples: {
+          type: 'object',
+          description: 'configure: sample slot → a sample name in the parent scope, or null to remove. sample("<slot>") inside plays it, so each abstraction instance can play its own.',
+          additionalProperties: true,
+        },
         to: S.str('duplicate: the new path'),
         force: S.bool('remove: even if modules outside read it'),
       },
@@ -91,8 +96,35 @@ export const TOOL_DEFS: ToolDef[] = [
         name: S.str('abstraction name (save, instantiate)'),
         path: S.str('save/detach: the subpatch; instantiate: where the new instance goes, e.g. "voice2"'),
         inlets: { type: 'object', description: 'instantiate: inlet name → source ref in the parent scope (or null)', additionalProperties: true },
+        samples: { type: 'object', description: 'instantiate: sample slot → the sample this instance plays', additionalProperties: true },
         params: { type: 'object', description: 'instantiate: initial knob values, "osc.freq" (an inner param) or "cutoff" (a control) → value', additionalProperties: { type: 'number' } },
         description: S.str('save: what it is'),
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'samples',
+    description:
+      'Audio files in the patch. Modules play them with sample("name") (see Samples in the guide). ' +
+      '"browse" lists what can be added: Sonic Pi\'s pack (where "stock": 206 CC0 samples, by category: bd, sn, hat, drum, elec, perc, loop, ambi, bass, tabla, guit, vinyl, glitch, mehackit, misc…; query filters by name) or the user\'s library (where "library": files they dropped onto the page). ' +
+      '"add" puts one in the patch under a name (from: a stock name like "loop_amen", a library file name, "stock:<name>" or "lib:<sha256>"). A loop\'s beats and a pitched sample\'s root come from analysis: check them. ' +
+      '"set" changes a sample\'s beats or root, or puts new audio (from) under the same name: the modules playing it follow without restarting. ' +
+      '"analyze" reports loudness, onsets, tempo with beat-count candidates, and pitch. "list" shows the patch\'s samples and what plays them. "remove" takes one out. ' +
+      '"record" captures `bars` bars of a module, a subpatch or "master" (the mix) into a new sample, from the next bar line: exactly that many beats, so it loops perfectly in QLoop (resampling). It returns when the recording is done.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['browse', 'list', 'add', 'set', 'analyze', 'remove', 'record'] },
+        name: S.str('the sample\'s name in the patch, a lowercase identifier ("amen", "kick")'),
+        from: S.str('add/set: where the audio is'),
+        beats: S.num('add/set: how many beats it spans (loops)'),
+        root: S.num('add/set: the MIDI note it sounds at (pitched samples)'),
+        description: S.str('what it is, in the user\'s terms'),
+        where: { type: 'string', enum: ['stock', 'library'], description: 'browse: which collection (default stock)' },
+        query: S.str('browse: part of a name or a category'),
+        source: S.str('record: a module, a subpatch or "master"'),
+        bars: S.num('record: how many bars (4 beats each), 1..32'),
       },
       required: ['action'],
     },
@@ -195,7 +227,9 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'mix',
-    description: 'Mixer settings for a module\'s send to the master: play (on/off), level, pan (-1..1), mute. A subpatch means the module behind its main outlet. Or the master level (module "master").',
+    description:
+      'The mixer: whether a module plays into the master (play), and its strip on the person\'s Mixer tab: level (its fader), pan (-1..1), mute, solo. A subpatch means the module behind its main outlet; "master" is the master fader (level). ' +
+      'The faders, pans, mutes and solos are the person\'s final mix: change them only when they ask. play is yours (routing: e.g. off for a dry source an effect carries).',
     input_schema: {
       type: 'object',
       properties: {
@@ -204,6 +238,7 @@ export const TOOL_DEFS: ToolDef[] = [
         level: S.num('linear gain'),
         pan: S.num('-1..1'),
         mute: S.bool('mute'),
+        solo: S.bool('solo: while any module is soloed, only soloed ones are heard'),
       },
       required: ['module'],
     },
@@ -281,6 +316,21 @@ export const TOOL_DEFS: ToolDef[] = [
     name: 'clear_patch',
     description: 'Remove every module, macro and routine (fading out). Only when the user wants to start over.',
     input_schema: { type: 'object', properties: { confirm: S.bool('must be true') }, required: ['confirm'] },
+  },
+  {
+    name: 'context',
+    description:
+      "Read or add to the AGENTS.md files this session reads: its song's, its set's, or the person's own (every session). " +
+      'append adds lines (what they asked you to remember: key, tempo, sounds, structure, names); replace rewrites the whole file (only when they ask). read shows all three.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['read', 'append', 'replace'] },
+        level: { type: 'string', enum: ['song', 'set', 'person'] },
+        text: S.str('append: the lines to add; replace: the whole file'),
+      },
+      required: ['action'],
+    },
   },
   {
     name: 'annotate',
