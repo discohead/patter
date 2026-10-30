@@ -47,8 +47,16 @@ export class Sequencer {
   private listeners = new Set<() => void>();
   readonly lookahead = 0.15;
   private logFn: (text: string) => void = () => {};
+  /** Knobs and macros routines have turned ('filter.cutoff', 'macro:dark'), and when. */
+  private turnedAt = new Map<string, number>();
 
   constructor(private readonly runtime: Runtime, private readonly engine: Engine) {}
+
+  /** What routines have turned lately: a listener keeps its own values for these, since its routines turn them too. */
+  turning(withinMs = 4000): Set<string> {
+    const now = Date.now();
+    return new Set([...this.turnedAt].filter(([, at]) => now - at < withinMs).map(([key]) => key));
+  }
 
   onChange(fn: () => void): () => void {
     this.listeners.add(fn);
@@ -344,10 +352,12 @@ export class Sequencer {
         const r = rt.resolveParamRef(ref); // fails now, inside the routine, if the ref is wrong
         // The knob moves when the bundle plays, not when it is scheduled.
         const delay = Math.max(0, (self.timeAtBeat(beat()) - self.engine.now()) * 1000);
+        self.turnedAt.set('macro' in r ? `macro:${r.macro}` : `${r.module}.${r.param}`, Date.now());
         setTimeout(() => ('macro' in r ? rt.setMacro(r.macro, value) : rt.setParam(r.module, r.param, value)), delay);
       },
       macro(name: string, value: number) {
         const delay = Math.max(0, (self.timeAtBeat(beat()) - self.engine.now()) * 1000);
+        self.turnedAt.set(`macro:${name}`, Date.now());
         setTimeout(() => rt.setMacro(name, value), delay);
       },
       beat,

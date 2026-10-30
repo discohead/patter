@@ -162,6 +162,20 @@ describe('following a document in place', () => {
   });
 });
 
+describe('the knobs routines turn', () => {
+  it('are remembered for a few seconds, for a listener to keep its own', () => {
+    const clock = { now: () => 0, beatAtTime: () => 0, timeAtBeat: () => 0 };
+    const seq = new Sequencer(rt, Object.assign(new FakeEngine(), { sonic: { clock }, now: () => 0 }) as unknown as Engine);
+    const routine = (seq as unknown as { scope(name: string): { knob(ref: string, v: number): void; macro(name: string, v: number): void } }).scope('sweep');
+    routine.knob('filter.cutoff', 1200);
+    routine.macro('dark', 0.7);
+    expect(seq.turning()).toEqual(new Set(['filter.cutoff', 'macro:dark']));
+    vi.advanceTimersByTime(5000);
+    expect(seq.turning()).toEqual(new Set());
+    expect(rt.paramValue('filter', 'cutoff')).toBe(1200);
+  });
+});
+
 describe('the sequencer follows routines in place', () => {
   const engine = () => Object.assign(new FakeEngine(), { sonic: { clock: null } }) as unknown as Engine;
 

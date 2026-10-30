@@ -98,6 +98,16 @@ await host.evaluate(() => window.patter.stop());
 check("the host's ⌘. stops the listener's sound", await until(listener, () => window.patter.stopped));
 await host.evaluate(() => window.patter.play());
 check('and play starts it again', await until(listener, () => !window.patter.stopped));
+await tool('define_module', { name: 'pluck', kind: 'voice', code: "const freq = param('freq', 220, 'freq');\nconst gate = param('gate', 1);\nconst env = EnvGen.kr(Env.adsr(0.002, 0.2, 0.3, 0.3), gate, { doneAction: 2 });\nPan2.ar(RLPF.ar(Pulse.ar(freq, 0.3), freq * 6, 0.3) * env * 0.2, 0)" });
+await tool('define_routine', { name: 'melody', code: "while (true) { play('pluck', { note: 60, dur: 0.25 }); yield 0.5; }", quant: 0 });
+const melody = (page) => page.evaluate(() => window.patter.seq.list().find((r) => r.name === 'melody')?.playing ?? null);
+check("the host's routine plays on the listener", await until(listener, () => window.patter.seq.list().some((r) => r.name === 'melody' && r.playing)));
+await listener.evaluate(() => window.patter.stop());
+await host.evaluate(() => window.patter.runtime.setParam('filter', 'res', 1));
+check('stopped here, the host’s next change comes in', await until(listener, () => window.patter.runtime.paramValue('filter', 'res') === 1));
+check('but its routine waits for this page’s ▶ (no notes piling up in the frozen engine)', (await melody(listener)) === false && (await melody(host)) === true);
+await listener.evaluate(() => window.patter.play());
+check('and ▶ starts it', (await melody(listener)) === true);
 await host.evaluate(() =>
   window.patter.broadcast.sendTranscript(window.patter.session, [
     { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'make it darker' }] },
@@ -117,7 +127,7 @@ check("a library sample that isn't on air can't be had", sample === 404, String(
 // ── off air ──
 await host.locator('button.on-air').click();
 check('the host goes off air', await until(host, () => window.patter.broadcast.state === 'off'));
-check('the listener sees since when, and keeps playing', await until(listener, () => document.querySelector('.on-air-status')?.textContent?.startsWith('off air since')) && (await modules()) === 'filter,lfo,osc');
+check('the listener sees since when, and keeps playing', await until(listener, () => document.querySelector('.on-air-status')?.textContent?.startsWith('off air since')) && (await modules()) === 'filter,lfo,osc,pluck');
 await listener.screenshot({ path: join(shots, '3-off-air.png') });
 
 const reached = [...new Set(asked.filter((p) => p.startsWith('/api/') || p.startsWith('/agents/')))];

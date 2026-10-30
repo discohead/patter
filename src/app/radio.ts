@@ -75,7 +75,10 @@ export class Radio {
     if (m.type === 'status') {
       const was = this.status;
       this.status = m.status;
-      if (was && was.stopped !== m.status.stopped && this.following && this.running) this.tuner.transport(m.status.stopped);
+      // The host stopped or started the sound, so does this page (and if audio started here before the
+      // broadcast answered, a host who's stopped stops it).
+      const turned = was ? was.stopped !== m.status.stopped : m.status.stopped;
+      if (turned && this.following && this.running) this.tuner.transport(m.status.stopped);
     } else if (m.type === 'patch') {
       if (m.updatedAt === this.latest?.updatedAt && m.session === this.latest.session) return; // a reconnect's welcome
       this.latest = { session: m.session, doc: m.doc, updatedAt: m.updatedAt };
@@ -135,14 +138,58 @@ export class Radio {
 }
 
 /**
+ * The host's patch, with the knobs this page's own routines are turning left
+ * where they are. The same routine turns them on both pages, at different
+ * points in the bar, so the host's snapshot of a moving knob would only yank
+ * it back until the routine's next step. `turning` holds 'module.param' and
+ * 'macro:name' refs; neither document is changed.
+ */
+export function keepTurning(next: PatchDoc, here: PatchDoc, turning: Set<string>): PatchDoc {
+  if (!turning.size) return next;
+  const out: PatchDoc = { ...next, modules: { ...next.modules }, macros: { ...next.macros } };
+  for (const key of turning) {
+    if (key.startsWith('macro:')) {
+      const name = key.slice(6);
+      if (out.macros[name] && here.macros[name]) out.macros[name] = { ...out.macros[name], value: here.macros[name].value };
+      continue;
+    }
+    const dot = key.lastIndexOf('.');
+    const [module, param] = [key.slice(0, dot), key.slice(dot + 1)];
+    const theirs = out.modules[module];
+    const mine = here.modules[module];
+    if (!theirs || !mine) continue;
+    const params = { ...theirs.params };
+    if (mine.params[param] === undefined) delete params[param];
+    else params[param] = mine.params[param];
+    out.modules[module] = { ...theirs, params };
+  }
+  return out;
+}
+
+/** Library samples the broadcast didn't have, and when that turned out: asked for again only after a while. */
+const missing = new Map<string, number>();
+const MISSING_MS = 2 * 60_000;
+
+/**
  * A sample from the host's library, for a listener: through the broadcast,
  * which may not have it the moment the patch arrives (the host's upload can
- * trail the patch by a few seconds), so it asks a few times.
+ * trail the patch by a few seconds), so it asks a few times. One it still
+ * doesn't have (an upload that failed) isn't asked for again for a while,
+ * so every change to the patch doesn't wait on it.
  */
 export async function broadcastSample(hash: string): Promise<Response> {
+  const since = missing.get(hash);
+  if (since !== undefined && Date.now() - since < MISSING_MS) return new Response('not on air', { status: 404 });
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`/listen/samples/${hash}`);
-    if (res.ok || attempt === 4 || (res.status !== 404 && res.status !== 429 && res.status < 500)) return res;
+    if (res.ok) {
+      missing.delete(hash);
+      return res;
+    }
+    if (attempt === 3 || (res.status !== 404 && res.status !== 429 && res.status < 500)) {
+      if (res.status === 404) missing.set(hash, Date.now());
+      return res;
+    }
     await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
   }
 }

@@ -28,7 +28,7 @@ import { Sequencer } from '../seq/sequencer';
 import { emptyPatch, leafOf, migratePatch, parentOf, type PatchDoc } from '../runtime/patch';
 import { Broadcast } from './broadcast';
 import { library, sha256, type CheckpointMeta, type ForkKeep, type LibraryTree, type SessionEntry, type SessionSnapshot } from './library';
-import { broadcastSample, Radio } from './radio';
+import { broadcastSample, keepTurning, Radio } from './radio';
 import { formatTime, Recorder } from './recorder';
 import type { Role } from './role';
 import { takeFileName, type Take } from './takes';
@@ -317,9 +317,12 @@ export class App {
     for (const w of this.readyWaiters.splice(0)) w();
   }
 
-  /** A listener's page takes the host's patch, changing only what differs (the first one: all of it). */
+  /**
+   * A listener's page takes the host's patch, changing only what differs (the
+   * first one: all of it), except the knobs its own routines are turning.
+   */
   private async tuneIn(doc: PatchDoc): Promise<void> {
-    const next = migratePatch(doc);
+    const next = keepTurning(migratePatch(doc), this.runtime.doc, this.seq.turning());
     const errors = await this.runtime.reconcile(next);
     try {
       // A new tempo re-anchors the beat: only when it really changed.
@@ -327,7 +330,15 @@ export class App {
     } catch (e) {
       errors.push((e as Error).message);
     }
-    errors.push(...this.seq.follow(next.routines ?? {}));
+    const routines = next.routines ?? {};
+    if (this.stopped) {
+      // Stopped here (⌘.): the host's routines wait for ▶ like the ones that were playing, instead of
+      // piling their notes into the frozen node tree.
+      errors.push(...this.seq.follow(Object.fromEntries(Object.entries(routines).map(([name, r]) => [name, { ...r, playing: false }]))));
+      this.pausedRoutines = Object.keys(routines).filter((name) => routines[name].playing);
+    } else {
+      errors.push(...this.seq.follow(routines));
+    }
     this.runtime.resetHistory();
     if (errors.length) this.engine.info(`the patch on air came in with problems: ${errors.join('; ')}`);
   }

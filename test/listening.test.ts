@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UIMessage } from 'ai';
 import { NOTHING_ON_AIR, type OnAirStatus } from '../src/app/on-air';
-import { Radio } from '../src/app/radio';
+import { broadcastSample, keepTurning, Radio } from '../src/app/radio';
 import { roleOf } from '../src/app/role';
 import { compactTranscript, settled } from '../src/app/transcript';
 import { emptyPatch, type PatchDoc } from '../src/runtime/patch';
@@ -119,6 +119,13 @@ describe('the radio', () => {
     expect(transport).toEqual([true]); // and the host's transport, as it is now
   });
 
+  it("stops a page whose audio started before the broadcast answered, if the host's sound is stopped", async () => {
+    const { radio, transport } = tuned();
+    await radio.start();
+    radio.receive({ type: 'status', status: status({ stopped: true }) });
+    expect(transport).toEqual([true]);
+  });
+
   it("follows the host's transport when it changes, not on every status", async () => {
     const { radio, transport } = tuned();
     radio.receive({ type: 'status', status: status() });
@@ -135,6 +142,71 @@ describe('the radio', () => {
     const messages = [{ id: 'm1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'darker' }] }];
     radio.receive({ type: 'transcript', session: 's-one', messages });
     expect(radio.transcript).toEqual(messages);
+  });
+});
+
+describe("knobs a listener's own routines are turning", () => {
+  const doc = (freq: number, dark: number) => {
+    const d = emptyPatch();
+    d.modules.osc = { kind: 'audio', code: 'Saw.ar(110)', params: { freq }, play: true, level: 1, pan: 0, mute: false, fadeTime: 0.5 };
+    d.modules.sub = { kind: 'audio', code: 'SinOsc.ar(55)', params: { freq: freq / 2 }, play: true, level: 1, pan: 0, mute: false, fadeTime: 0.5 };
+    d.macros.dark = { value: dark };
+    d.macros.bright = { value: dark / 2 };
+    return d;
+  };
+
+  it("keep where they are here when the host's patch comes in; the rest follow", () => {
+    const theirs = doc(220, 0.8);
+    const here = doc(330, 0.2);
+    const out = keepTurning(theirs, here, new Set(['osc.freq', 'macro:dark']));
+    expect(out.modules.osc.params.freq).toBe(330);
+    expect(out.macros.dark.value).toBe(0.2);
+    expect(out.modules.sub.params.freq).toBe(110);
+    expect(out.macros.bright.value).toBe(0.4);
+    expect(theirs.modules.osc.params.freq).toBe(220);
+    expect(theirs.macros.dark.value).toBe(0.8);
+  });
+
+  it("leave the host's patch alone when nothing is turning", () => {
+    const theirs = doc(220, 0.8);
+    expect(keepTurning(theirs, doc(330, 0.2), new Set())).toBe(theirs);
+  });
+});
+
+describe('library samples, for a listener', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("asks a few times for one the broadcast doesn't have yet, and gets it once it's there", async () => {
+    vi.useFakeTimers();
+    let asked = 0;
+    vi.stubGlobal('fetch', async () => (++asked < 3 ? new Response('not on air', { status: 404 }) : new Response('RIFF')));
+    const res = broadcastSample('e'.repeat(64));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await res).status).toBe(200);
+    expect(asked).toBe(3);
+  });
+
+  it("doesn't hold up every change for one that never arrives", async () => {
+    vi.useFakeTimers();
+    let asked = 0;
+    vi.stubGlobal('fetch', async () => {
+      asked++;
+      return new Response('not on air', { status: 404 });
+    });
+    const first = broadcastSample('f'.repeat(64));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await first).status).toBe(404);
+    expect(asked).toBe(4);
+    expect((await broadcastSample('f'.repeat(64))).status).toBe(404);
+    expect(asked).toBe(4);
+    vi.setSystemTime(Date.now() + 3 * 60_000);
+    const later = broadcastSample('f'.repeat(64));
+    await vi.advanceTimersByTimeAsync(10_000);
+    await later;
+    expect(asked).toBe(8);
   });
 });
 
