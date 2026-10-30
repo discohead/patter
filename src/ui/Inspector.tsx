@@ -303,18 +303,21 @@ function SubpatchPanel({ path, here }: { path: string; here?: boolean }) {
             <li key={name}>
               <span className="port-name">{name}</span>
               <span className="dim">←</span>
-              <select
-                value={inl.from ?? ''}
-                disabled={readOnly}
-                title="what feeds this inlet (re-patching doesn't restart anything)"
-                onChange={(e) => void run(() => rt.defineSubpatch(path, { inlets: { [name]: { from: e.target.value || null } } }))}
-              >
-                <option value="">(unconnected)</option>
-                {options.map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-                {inl.from && !options.includes(inl.from) && <option value={inl.from}>{inl.from}</option>}
-              </select>
+              {readOnly ? (
+                <span>{inl.from ?? '(unconnected)'}</span>
+              ) : (
+                <select
+                  value={inl.from ?? ''}
+                  title="what feeds this inlet (re-patching doesn't restart anything)"
+                  onChange={(e) => void run(() => rt.defineSubpatch(path, { inlets: { [name]: { from: e.target.value || null } } }))}
+                >
+                  <option value="">(unconnected)</option>
+                  {options.map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                  {inl.from && !options.includes(inl.from) && <option value={inl.from}>{inl.from}</option>}
+                </select>
+              )}
               <span className="dim">{inl.channels}ch {inl.rate}</span>
             </li>
           ))}
