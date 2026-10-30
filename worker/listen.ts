@@ -7,14 +7,22 @@
 //   GET /listen/samples/:sha256    a sample from the host's library, while the patch on air plays it
 //
 // None of it reaches the model, the library, or anything that writes. Every
-// path but /login (which Access guards) is rate limited per IP.
+// path but /login (which Access guards) is rate limited per IP, and the
+// WebSocket only opens for the page itself (OnAir caps how many are open).
 
 import { hostOf } from './access';
+import { LISTENER_HEADER } from './on-air';
 
 const SAMPLE = /^\/listen\/samples\/([0-9a-f]{64})$/;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const text = (body: string, status: number) => new Response(body, { status, headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' } });
+
+/** Where a listener connects from, as a hash: enough to count their sockets, without keeping the address. */
+async function addressTag(ip: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`patter listener ${ip}`));
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 export function isPublic(path: string): boolean {
   return path === '/whoami' || path === '/login' || path === '/listen' || path.startsWith('/listen/');
@@ -35,7 +43,11 @@ export async function handlePublic(request: Request, env: Env): Promise<Response
   const onAir = env.OnAir.getByName('on-air');
   if (path === '/listen') {
     if (request.headers.get('Upgrade') !== 'websocket') return text('expected a WebSocket', 426);
-    return onAir.fetch(request);
+    // Browsers always say which page opens a WebSocket: another site can't open them from its visitors' browsers.
+    if (request.headers.get('Origin') !== url.origin) return text('listen from the page itself', 403);
+    const headers = new Headers(request.headers);
+    headers.set(LISTENER_HEADER, await addressTag(ip));
+    return onAir.fetch(new Request(request, { headers }));
   }
   if (path === '/listen/state') return json(await onAir.snapshot());
   const hash = SAMPLE.exec(path)?.[1];

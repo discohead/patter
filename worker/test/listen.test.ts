@@ -8,7 +8,7 @@ import { OnAirState, type OnAirKey } from '../../src/app/on-air';
 import { emptyPatch } from '../../src/runtime/patch';
 import { hostOf, verifyAccess } from '../access';
 import { handlePublic, isPublic } from '../listen';
-import { OnAir } from '../on-air';
+import { LISTENER_HEADER, MAX_LISTENERS, MAX_PER_ADDRESS, OnAir } from '../on-air';
 
 vi.mock('cloudflare:workers', () => ({
   DurableObject: class {
@@ -123,9 +123,29 @@ describe('what a listener can reach', () => {
   it('hands /listen to the OnAir object as a WebSocket, and nothing else', async () => {
     expect((await handlePublic(get('/listen'), env())).status).toBe(426);
     expect(forwarded).toHaveLength(0);
-    expect(await (await handlePublic(get('/listen', { upgrade: 'websocket' }), env())).text()).toBe('upgraded');
+    const socket = { upgrade: 'websocket', origin: 'https://datspace.studio', 'cf-connecting-ip': '203.0.113.9' };
+    expect(await (await handlePublic(get('/listen', socket), env())).text()).toBe('upgraded');
     expect(forwarded).toHaveLength(1);
     expect((await handlePublic(new Request('https://datspace.studio/listen/state', { method: 'POST', body: '{}' }), env())).status).toBe(405);
+  });
+
+  it('opens the WebSocket only for the page itself, so other sites can’t open them from their visitors’ browsers', async () => {
+    expect((await handlePublic(get('/listen', { upgrade: 'websocket' }), env())).status).toBe(403);
+    expect((await handlePublic(get('/listen', { upgrade: 'websocket', origin: 'https://example.com' }), env())).status).toBe(403);
+    expect(forwarded).toHaveLength(0);
+  });
+
+  it('tells the OnAir object where a listener connects from as a hash, never the address', async () => {
+    const from = async (ip: string) => {
+      forwarded.length = 0;
+      await handlePublic(get('/listen', { upgrade: 'websocket', origin: 'https://datspace.studio', 'cf-connecting-ip': ip }), env());
+      return forwarded[0].headers.get(LISTENER_HEADER)!;
+    };
+    const a = await from('203.0.113.9');
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(a).not.toContain('203');
+    expect(await from('203.0.113.9')).toBe(a);
+    expect(await from('198.51.100.7')).not.toBe(a);
   });
 
   it('serves what is on air as JSON', async () => {
@@ -180,6 +200,7 @@ class Socket {
 function onAirObject() {
   const kv = new Map<string, string>();
   const sockets: Socket[] = [];
+  const tags = new Map<Socket, string[]>();
   const ctx = {
     storage: {
       sql: {
@@ -192,10 +213,14 @@ function onAirObject() {
       transactionSync: <T>(fn: () => T) => fn(),
     },
     setWebSocketAutoResponse() {},
-    getWebSockets: () => sockets,
+    getWebSockets: (tag?: string) => (tag === undefined ? sockets : sockets.filter((s) => tags.get(s)?.includes(tag))),
+    acceptWebSocket(ws: Socket, t: string[] = []) {
+      sockets.push(ws);
+      tags.set(ws, t);
+    },
   };
   vi.stubGlobal('WebSocketRequestResponsePair', class {});
-  return { object: new OnAir(ctx as unknown as DurableObjectState, {} as Env), sockets };
+  return { object: new OnAir(ctx as unknown as DurableObjectState, {} as Env), sockets, tags };
 }
 
 describe('the OnAir object', () => {
@@ -208,6 +233,19 @@ describe('the OnAir object', () => {
     for (const s of sockets) expect(s.sent).toHaveLength(3);
     expect(object.host('tab-aaaaaaaa')).toMatchObject({ mine: true, listeners: 2 });
     expect(object.host('tab-bbbbbbbb')).toMatchObject({ mine: false });
+  });
+
+  it('has room for an audience, but not for anyone hoarding sockets', async () => {
+    const { object, sockets, tags } = onAirObject();
+    const knock = (from: string) => object.fetch(new Request('https://datspace.studio/listen', { headers: { upgrade: 'websocket', [LISTENER_HEADER]: from } }));
+    for (let i = 0; i < MAX_PER_ADDRESS; i++) {
+      const s = new Socket();
+      sockets.push(s);
+      tags.set(s, ['busy']);
+    }
+    expect((await knock('busy')).status).toBe(503);
+    while (sockets.length < MAX_LISTENERS) sockets.push(new Socket());
+    expect((await knock('someone-else')).status).toBe(503);
   });
 
   it("doesn't take anything from a listener: whatever one sends ends its connection", () => {

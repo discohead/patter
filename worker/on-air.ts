@@ -10,6 +10,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { OnAirState, type OnAirRefusal, type OnAirSnapshot, type OnAirStatus, type OnAirUpdate } from '../src/app/on-air';
 
+/** The Worker tags each listener with a hash of where it connects from (never the address itself). */
+export const LISTENER_HEADER = 'x-patter-listener';
+/** Room for an audience, not for someone hoarding sockets: each update goes to every one of them. */
+export const MAX_LISTENERS = 2000;
+export const MAX_PER_ADDRESS = 32;
+
 export class OnAir extends DurableObject<Env> {
   private readonly state: OnAirState;
 
@@ -30,8 +36,12 @@ export class OnAir extends DurableObject<Env> {
   /** A listener tunes in (GET /listen, upgraded by the Worker): what's on air now, then every change. */
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade') !== 'websocket') return new Response('expected a WebSocket', { status: 426 });
+    const from = request.headers.get(LISTENER_HEADER) ?? 'unknown';
+    if (this.ctx.getWebSockets().length >= MAX_LISTENERS || this.ctx.getWebSockets(from).length >= MAX_PER_ADDRESS) {
+      return new Response('too many listeners: try again in a while', { status: 503 });
+    }
     const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server, [from]);
     for (const m of this.state.welcome()) server.send(m);
     return new Response(null, { status: 101, webSocket: client });
   }
