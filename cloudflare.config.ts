@@ -1,7 +1,9 @@
 import { bindings, defineConfig, exports, triggers } from 'cf/config';
 import * as entrypoint from './worker/index.ts' with { type: 'cf-worker' };
 
-// The audience tag of the Access application "patter (datspace.fm)".
+// The audience tag of the Access application that covers the host's paths
+// (/api, /agents, /login) on datspace.studio. Editing the existing
+// application "patter (datspace.fm)" keeps this tag; a new one has its own.
 const ACCESS_AUD = '1a336f716d224a5e94fe26f649ccf2736bdba3328fa6807f060628d598e420a6';
 
 export default defineConfig(({ mode }) => ({
@@ -39,8 +41,10 @@ export default defineConfig(({ mode }) => ({
       ALLOWED_EMAILS: bindings.text('jaredcolin@gmail.com'),
       ACCESS_MODE: bindings.text(mode === 'development' ? 'off' : 'on'),
     },
-    triggers: [triggers.fetch({ pattern: 'datspace.fm/*', zone: 'datspace.fm' })],
-    // Only datspace.fm (behind Access): no workers.dev or preview URLs that could bypass it.
+    // datspace.studio is a custom domain of datspace-ai (it serves the other bands); a route here takes
+    // precedence over it, so the whole hostname is patter's.
+    triggers: [triggers.fetch({ pattern: 'datspace.studio/*', zone: 'datspace.studio' })],
+    // Only datspace.studio: no workers.dev or preview URLs, which Access wouldn't cover.
     workersDev: false,
     previewUrls: false,
     observability: { enabled: true },
