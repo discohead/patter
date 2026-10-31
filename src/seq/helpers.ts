@@ -1,6 +1,8 @@
 // Musical helpers available to routines: scales, chords, euclidean rhythms,
 // random choices, and small pattern objects in the spirit of sclang's
-// Pseq/Prand/Pwhite (each has .next()).
+// Pseq/Prand/Pwhite (each has .next()), and sclang's own Prewrite.
+
+import { Prewrite } from './prewrite';
 
 export const SCALES: Record<string, number[]> = {
   major: [0, 2, 4, 5, 7, 9, 11],
@@ -182,7 +184,7 @@ export function patternHelpers(): Record<string, unknown> {
   return {
     SCALES, CHORDS, degree, quantize, chord, euclid,
     rrand, exprand, coin, choose, wchoose, shuffle,
-    seq, rand, xrand, white, brown, markov, turing,
+    seq, rand, xrand, white, brown, markov, turing, Prewrite,
     midicps: (n: number) => 440 * 2 ** ((n - 69) / 12),
     cpsmidi: (f: number) => 69 + 12 * Math.log2(f / 440),
     dbamp: (db: number) => 10 ** (db / 20),

@@ -10,6 +10,7 @@ import { SPECIAL_CLASSES } from './special';
 import { SAMPLER_CLASSES } from './samplers';
 import { GraphError, Sig, bin, madd, un, type SigLike } from './ugen';
 import { UNARY_OPS, type UnaryOp } from './ops';
+import { Prewrite } from '../seq/prewrite';
 
 export const catalog = catalogJson as unknown as Catalog;
 
@@ -80,6 +81,8 @@ const helpers: Record<string, unknown> = {
   rand2: (x = 1) => (Math.random() * 2 - 1) * x,
   coin: (p = 0.5) => Math.random() < p,
   choose: (a: unknown[]) => a[Math.floor(Math.random() * a.length)],
+  // build-time L-systems: Dseq(Prewrite(0, { 0: [0, 1], 1: [1, 0] }, 8).nextN(256), inf)
+  Prewrite,
   max: (a: SigLike, b: SigLike) => (num(a) && num(b) ? Math.max(a as number, b as number) : bin('max', a, b)),
   min: (a: SigLike, b: SigLike) => (num(a) && num(b) ? Math.min(a as number, b as number) : bin('min', a, b)),
   pow: (a: SigLike, b: SigLike) => bin('pow', a, b),
