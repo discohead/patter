@@ -575,8 +575,27 @@ while (true) {
 - **`knob(ref, v)`** and **`macro(name, v)`** automate the UI.
 - Replacing a routine swaps it on its next `quant` boundary.
 - Helpers: `seq`, `rand`, `xrand`, `white`, `brown`, `markov`, `turing`,
-  `euclid`, `degree`, `quantize`, `chord`, `SCALES`, `rrand`, `exprand`,
-  `coin`, `choose`, `wchoose`, `shuffle`.
+  `Prewrite`, `euclid`, `degree`, `quantize`, `chord`, `SCALES`, `rrand`,
+  `exprand`, `coin`, `choose`, `wchoose`, `shuffle`.
+- **`Prewrite(pattern, dict, levels)`** is sclang's L-system pattern, ported
+  from `Prewrite.sc` so that it behaves the same way:
+  - Each value of `pattern` is rewritten `levels` deep through `dict`.
+  - A rule's value is an array, or a string read as its characters.
+  - A value with no rule passes through unchanged.
+  - A plain value as the pattern repeats forever, as in sclang.
+
+  It has `.next()`, `.nextN(n)`, `.asStream()` and `.reset()`. Module code can
+  use it too, to grow a list at build time:
+  `Select.kr(step, Prewrite(0, { 0: [0, 1], 1: [1, 0] }, 8).nextN(256))`.
+
+```js
+// routine "hats": Thue–Morse accents, endless and never in a short loop
+const tm = Prewrite(0, { 0: [0, 1], 1: [1, 0] }, 4);
+while (true) {
+  play('hat', { note: 60, dur: 0.25, amp: tm.next() ? 0.3 : 0.12 });
+  yield 0.25;
+}
+```
 
 Sequencing can also live entirely in the engine (clocks, `Demand`, `Duty`,
 `Stepper`, `PulseDivider`, `TRand`, `Latch` modules on control buses),
